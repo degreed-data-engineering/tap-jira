@@ -56,13 +56,19 @@
     "savedFilterId": {
       "type": [
         "null",
-        "boolean"
+        "integer"
       ]
     },
     "oldDoneIssuesCutoff": {
       "type": [
         "null",
         "string"
+      ]
+    },
+    "parentProjectId": {
+      "type": [
+        "null",
+        "integer"
       ]
     }
   }
