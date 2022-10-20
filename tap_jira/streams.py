@@ -149,6 +149,12 @@ class BoardsGreenhopper(Stream):
         boards = Context.client.request(self.tap_stream_id, "GET", path)['views']
         self.write_page(boards)
 
+class Velocity(Stream):
+    def sync(self):
+        path = "/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=39"
+        velocity = Context.client.request(self.tap_stream_id, "GET", path)['sprints']
+        self.write_page(velocity)
+
 class Projects(Stream):
     def sync_on_prem(self):
         """ Sync function for the on prem instances"""
@@ -361,6 +367,7 @@ class Worklogs(Stream):
 
 VERSIONS = Stream("versions", ["id"], indirect_stream=True)
 BOARDS = BoardsGreenhopper("boardsGreenhopper",["id"])
+VELOCITY = Velocity("velocity",["id"])
 COMPONENTS = Stream("components", ["id"], indirect_stream=True)
 ISSUES = Issues("issues", ["id"])
 ISSUE_COMMENTS = Stream("issue_comments", ["id"], indirect_stream=True)
@@ -372,6 +379,7 @@ CHANGELOGS = Stream("changelogs", ["id"], indirect_stream=True)
 ALL_STREAMS = [
     PROJECTS,
     BOARDS,
+    VELOCITY,
     VERSIONS,
     COMPONENTS,
     ProjectTypes("project_types", ["key"]),
