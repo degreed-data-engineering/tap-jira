@@ -4,8 +4,9 @@
     "null",
     "object"
   ],
-  "properties": {
-    "velocityStatEntries": {
+  "patternProperties": {
+    ".+": {
+      "title": "sprintId",
       "type": [
         "null",
         "object"

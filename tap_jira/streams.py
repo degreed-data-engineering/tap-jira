@@ -158,8 +158,8 @@ class Velocity(Stream):
         self.tap_stream_id = 'velocityStatEntries'
         for sprint in velocity['sprints']:
             sprintid = str(sprint['id'])
-            LOGGER.info("------------------------------------------------------streams.py Velocity: %s", sprintid)
             velocityStatEntries = velocity['velocityStatEntries'][sprintid]
+            LOGGER.info("------------------------------------------------------streams.py Velocity: %s", velocityStatEntries)
             self.write_page(velocityStatEntries)
         
 
@@ -385,21 +385,21 @@ PROJECTS = Projects("projects", ["id"])
 CHANGELOGS = Stream("changelogs", ["id"], indirect_stream=True)
 
 ALL_STREAMS = [
-    PROJECTS,
+    #PROJECTS,
     BOARDS,
     VELOCITY,
-    VERSIONS,
-    COMPONENTS,
-    ProjectTypes("project_types", ["key"]),
-    Stream("project_categories", ["id"], path="/rest/api/2/projectCategory"),
-    Stream("resolutions", ["id"], path="/rest/api/2/resolution"),
-    Stream("roles", ["id"], path="/rest/api/2/role"),
-    Users("users", ["accountId"]),
-    ISSUES,
-    ISSUE_COMMENTS,
-    CHANGELOGS,
-    ISSUE_TRANSITIONS,
-    Worklogs("worklogs", ["id"]),
+    #VERSIONS,
+    #COMPONENTS,
+    #ProjectTypes("project_types", ["key"]),
+    #Stream("project_categories", ["id"], path="/rest/api/2/projectCategory"),
+    #Stream("resolutions", ["id"], path="/rest/api/2/resolution"),
+    #Stream("roles", ["id"], path="/rest/api/2/role"),
+    #Users("users", ["accountId"]),
+    #ISSUES,
+    #ISSUE_COMMENTS,
+    #CHANGELOGS,
+    #ISSUE_TRANSITIONS,
+    #Worklogs("worklogs", ["id"]),
 ]
 
 ALL_STREAM_IDS = [s.tap_stream_id for s in ALL_STREAMS]
