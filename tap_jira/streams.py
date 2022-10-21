@@ -152,8 +152,16 @@ class BoardsGreenhopper(Stream):
 class Velocity(Stream):
     def sync(self):
         path = "/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=39"
-        velocity = Context.client.request(self.tap_stream_id, "GET", path)['sprints']
-        self.write_page(velocity)
+        velocity = Context.client.request(self.tap_stream_id, "GET", path)
+        self.write_page(velocity['sprints'])
+
+        self.tap_stream_id = 'velocityStatEntries'
+        for sprint in velocity['sprints']:
+            sprintid = str(sprint['id'])
+            LOGGER.info("------------------------------------------------------streams.py Velocity: %s", sprintid)
+            velocityStatEntries = velocity['velocityStatEntries'][sprintid]
+            self.write_page(velocityStatEntries)
+        
 
 class Projects(Stream):
     def sync_on_prem(self):
@@ -367,7 +375,7 @@ class Worklogs(Stream):
 
 VERSIONS = Stream("versions", ["id"], indirect_stream=True)
 BOARDS = BoardsGreenhopper("boardsGreenhopper",["id"])
-VELOCITY = Velocity("velocity",["id"])
+VELOCITY = Velocity("velocitySprints",["id"])
 COMPONENTS = Stream("components", ["id"], indirect_stream=True)
 ISSUES = Issues("issues", ["id"])
 ISSUE_COMMENTS = Stream("issue_comments", ["id"], indirect_stream=True)

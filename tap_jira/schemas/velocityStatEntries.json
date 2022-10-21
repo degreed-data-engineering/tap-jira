@@ -1,0 +1,121 @@
+{
+  "title": "velocityStatEntries",
+  "type": [
+    "null",
+    "object"
+  ],
+  "properties": {
+    "velocityStatEntries": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "estimated": {
+          "type": [
+            "null",
+            "object"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "null",
+                "number"
+              ]
+            },
+            "text": {
+              "type": [
+                "null",
+                "string"
+              ]
+            }
+          }
+        },
+        "completed": {
+          "type": [
+            "null",
+            "object"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "null",
+                "number"
+              ]
+            },
+            "text": {
+              "type": [
+                "null",
+                "string"
+              ]
+            }
+          }
+        },
+        "allConsideredIssueKeys": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "estimatedEntries": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "properties": {
+              "issueKey": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "value": {
+                "type": [
+                  "null",
+                  "number"
+                ]
+              }
+            }
+          }
+        },
+        "completedEntries": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "properties": {
+              "issueKey": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "value": {
+                "type": [
+                  "null",
+                  "number"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
