@@ -156,11 +156,9 @@ class Velocity(Stream):
         self.write_page(velocity['sprints'])
 
         self.tap_stream_id = 'velocityStatEntries'
-        for sprint in velocity['sprints']:
-            sprintid = str(sprint['id'])
-            velocityStatEntries = velocity['velocityStatEntries'][sprintid]
-            LOGGER.info("------------------------------------------------------streams.py Velocity: %s", velocityStatEntries)
-            self.write_page(velocityStatEntries)
+        velocityStatEntries = velocity['velocityStatEntries']
+        LOGGER.info("------------------------------------------------------streams.py Velocity: %s", velocityStatEntries)
+        self.write_page(velocityStatEntries)
         
 
 class Projects(Stream):
@@ -386,7 +384,7 @@ CHANGELOGS = Stream("changelogs", ["id"], indirect_stream=True)
 
 ALL_STREAMS = [
     #PROJECTS,
-    BOARDS,
+    #BOARDS,
     VELOCITY,
     #VERSIONS,
     #COMPONENTS,
