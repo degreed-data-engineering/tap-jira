@@ -152,14 +152,14 @@ class BoardsGreenhopper(Stream):
 class Velocity(Stream):
     def sync(self):
         path = "/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=39"
+        # get data from the Velocity endpoint
         velocity = Context.client.request(self.tap_stream_id, "GET", path)
-        self.write_page(velocity['sprints'])
-
-        self.tap_stream_id = 'velocityStatEntries'
-        velocityStatEntries = velocity['velocityStatEntries']
-        LOGGER.info("------------------------------------------------------streams.py Velocity: %s", velocityStatEntries)
-        self.write_page(velocityStatEntries)
-        
+        sprintData = velocity['sprints'] 
+        for sprint in sprintData:
+            sprintid = str(sprint['id'])
+            velocitystats = {"velocityEstimated": velocity['velocityStatEntries'][sprintid]['estimated']['value'], "velocityCompleted": velocity['velocityStatEntries'][sprintid]['completed']['value']}
+            sprint.update(velocitystats)
+        self.write_page(sprintData)
 
 class Projects(Stream):
     def sync_on_prem(self):
@@ -373,7 +373,7 @@ class Worklogs(Stream):
 
 VERSIONS = Stream("versions", ["id"], indirect_stream=True)
 BOARDS = BoardsGreenhopper("boardsGreenhopper",["id"])
-VELOCITY = Velocity("velocitySprints",["id"])
+VELOCITY = Velocity("velocity",["id"])
 COMPONENTS = Stream("components", ["id"], indirect_stream=True)
 ISSUES = Issues("issues", ["id"])
 ISSUE_COMMENTS = Stream("issue_comments", ["id"], indirect_stream=True)
@@ -384,7 +384,7 @@ CHANGELOGS = Stream("changelogs", ["id"], indirect_stream=True)
 
 ALL_STREAMS = [
     #PROJECTS,
-    #BOARDS,
+    BOARDS,
     VELOCITY,
     #VERSIONS,
     #COMPONENTS,
