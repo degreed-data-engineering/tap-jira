@@ -52,7 +52,7 @@
               "string"
             ]
           },
-          "BoardId": {
+          "boardId": {
             "type": [
               "null",
               "integer"

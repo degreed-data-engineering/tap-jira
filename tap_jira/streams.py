@@ -160,7 +160,11 @@ class BoardsGreenhopper(Stream):
                 # per Sprint in the Sprint-section of the data, add the Estimated value & Completed value from the VelocityStatEntries-section
                 for sprint in sprintData:
                     sprintid = str(sprint['id'])
-                    velocitystats = {"BoardId": board['id'],"velocityEstimated": velocity['velocityStatEntries'][sprintid]['estimated']['value'], "velocityCompleted": velocity['velocityStatEntries'][sprintid]['completed']['value']}
+                    velocitystats = {
+                        "boardId"          : board['id']
+                       ,"velocityEstimated": velocity['velocityStatEntries'][sprintid]['estimated']['value']
+                       ,"velocityCompleted": velocity['velocityStatEntries'][sprintid]['completed']['value']
+                        }
                     sprint.update(velocitystats)
                 VELOCITY.write_page(sprintData)
             LOGGER.info("Execution duration for Velocity endpoint: %s", singer.utils.now() - starttime)
