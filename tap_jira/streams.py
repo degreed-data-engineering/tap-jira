@@ -149,17 +149,20 @@ class BoardsGreenhopper(Stream):
         boards = Context.client.request(self.tap_stream_id, "GET", path)['views']
         self.write_page(boards)
 
-class Velocity(Stream):
-    def sync(self):
-        path = "/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=39"
-        # get data from the Velocity endpoint
-        velocity = Context.client.request(self.tap_stream_id, "GET", path)
-        sprintData = velocity['sprints'] 
-        for sprint in sprintData:
-            sprintid = str(sprint['id'])
-            velocitystats = {"velocityEstimated": velocity['velocityStatEntries'][sprintid]['estimated']['value'], "velocityCompleted": velocity['velocityStatEntries'][sprintid]['completed']['value']}
-            sprint.update(velocitystats)
-        self.write_page(sprintData)
+        # per board, get the Velocity statistics
+        self.tap_stream_id = 'velocity'
+        for board in boards:
+            LOGGER.info("Board %s", board['id'])
+            path = "/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=" + str(board['id'])
+            # get data from the Velocity endpoint
+            velocity = Context.client.request(self.tap_stream_id, "GET", path)
+            sprintData = velocity['sprints']
+            # per Sprint in the Sprint-section of the data, add the Estimated value & Completed value from the VelocityStatEntries-section
+            for sprint in sprintData:
+                sprintid = str(sprint['id'])
+                velocitystats = {"BoardId": board['id'],"velocityEstimated": velocity['velocityStatEntries'][sprintid]['estimated']['value'], "velocityCompleted": velocity['velocityStatEntries'][sprintid]['completed']['value']}
+                sprint.update(velocitystats)
+            self.write_page(sprintData)
 
 class Projects(Stream):
     def sync_on_prem(self):
@@ -373,7 +376,7 @@ class Worklogs(Stream):
 
 VERSIONS = Stream("versions", ["id"], indirect_stream=True)
 BOARDS = BoardsGreenhopper("boardsGreenhopper",["id"])
-VELOCITY = Velocity("velocity",["id"])
+VELOCITY = Stream("velocity",["id"], indirect_stream=True)
 COMPONENTS = Stream("components", ["id"], indirect_stream=True)
 ISSUES = Issues("issues", ["id"])
 ISSUE_COMMENTS = Stream("issue_comments", ["id"], indirect_stream=True)
