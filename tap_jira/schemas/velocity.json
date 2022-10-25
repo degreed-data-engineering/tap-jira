@@ -1,5 +1,5 @@
 {
-  "title": "velocitySprints",
+  "title": "velocity",
   "type": [
     "null",
     "object"
@@ -50,6 +50,24 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "BoardId": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "velocityEstimated": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "velocityCompleted": {
+            "type": [
+              "null",
+              "number"
             ]
           }
         }
