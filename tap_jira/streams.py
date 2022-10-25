@@ -151,6 +151,7 @@ class BoardsGreenhopper(Stream):
 
         # per board, get the Velocity statistics. This `for board in boards`-loop takes about 13 minutes in total to complete.
         if Context.is_selected(VELOCITY.tap_stream_id):
+            starttime = singer.utils.now()
             for board in boards:
                 path = "/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=" + str(board['id'])
                 # get data from the Velocity endpoint
@@ -162,6 +163,7 @@ class BoardsGreenhopper(Stream):
                     velocitystats = {"BoardId": board['id'],"velocityEstimated": velocity['velocityStatEntries'][sprintid]['estimated']['value'], "velocityCompleted": velocity['velocityStatEntries'][sprintid]['completed']['value']}
                     sprint.update(velocitystats)
                 VELOCITY.write_page(sprintData)
+            LOGGER.info("Execution duration for Velocity endpoint: %s", singer.utils.now() - starttime)
 
 class Projects(Stream):
     def sync_on_prem(self):
