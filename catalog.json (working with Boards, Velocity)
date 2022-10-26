@@ -1432,7 +1432,7 @@
           ]
         }
       },
-      "stream": "velocitySprints",
+      "stream": "velocity",
       "metadata": [
         {
           "breadcrumb": [],
@@ -1447,6 +1447,155 @@
           "breadcrumb": [
             "properties",
             "sprints"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        }
+      ]
+    },
+    {
+      "tap_stream_id": "sprints",
+      "key_properties": [
+        "id"
+      ],
+      "schema": {
+        "properties": {
+          "id": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "self": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "state": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "startDate": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "endDate": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "completeDate": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "originBoardId": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          }
+        },
+        "type": [
+          "null",
+          "object"
+        ]
+      },
+      "stream": "sprints",
+      "metadata": [
+        {
+          "breadcrumb": [],
+          "metadata": {
+            "selected": true,
+            "table-key-properties": [
+              "id"
+            ]
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "id"
+          ],
+          "metadata": {
+            "inclusion": "automatic"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "self"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "state"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "name"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "startDate"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "endDate"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "completeDate"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "originBoardId"
           ],
           "metadata": {
             "inclusion": "available"
@@ -4391,7 +4540,10 @@
             ]
           }
         },
-        "type": "object"
+        "type": [
+          "null",
+          "object"
+        ]
       },
       "stream": "changelogs",
       "metadata": [

@@ -153,21 +153,39 @@ class BoardsGreenhopper(Stream):
         if Context.is_selected(VELOCITY.tap_stream_id):
             starttime = singer.utils.now()
             for board in boards:
-                path = "/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=" + str(board['id'])
+                boardId = str(board['id'])
+                path = "/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=" + boardId
                 # get data from the Velocity endpoint
                 velocity = Context.client.request(VELOCITY.tap_stream_id, "GET", path)
                 sprintData = velocity['sprints']
                 # per Sprint in the Sprint-section of the data, add the Estimated value & Completed value from the VelocityStatEntries-section
                 for sprint in sprintData:
-                    sprintid = str(sprint['id'])
+                    sprintId = str(sprint['id'])
                     velocitystats = {
-                        "boardId"          : board['id']
-                       ,"velocityEstimated": velocity['velocityStatEntries'][sprintid]['estimated']['value']
-                       ,"velocityCompleted": velocity['velocityStatEntries'][sprintid]['completed']['value']
+                        "boardId"          : boardId
+                       ,"velocityEstimated": velocity['velocityStatEntries'][sprintId]['estimated']['value']
+                       ,"velocityCompleted": velocity['velocityStatEntries'][sprintId]['completed']['value']
                         }
                     sprint.update(velocitystats)
                 VELOCITY.write_page(sprintData)
             LOGGER.info("Execution duration for Velocity endpoint: %s", singer.utils.now() - starttime)
+
+        if Context.is_selected(SPRINTS.tap_stream_id):
+            starttime = singer.utils.now()
+            for board in boards:
+                if board['sprintSupportEnabled']:
+                    #starttime = singer.utils.now()
+                    path = "/rest/agile/1.0/board/{}/sprint".format(board["id"])
+                    page_num_offset = [SPRINTS.tap_stream_id, "offset", "page_num"]
+                    page_num = Context.bookmark(page_num_offset) or 0
+                    pager = Paginator(Context.client, items_key="values", page_num=page_num)
+                    for page in pager.pages(SPRINTS.tap_stream_id, "GET", path):
+                        SPRINTS.write_page(page)
+                        Context.set_bookmark(page_num_offset, pager.next_page_num)
+                        singer.write_state(Context.state)
+                    Context.set_bookmark(page_num_offset, None)
+                    singer.write_state(Context.state)
+            LOGGER.info("Execution duration for Sprints endpoint: %s", singer.utils.now() - starttime)
 
 class Projects(Stream):
     def sync_on_prem(self):
@@ -382,6 +400,7 @@ class Worklogs(Stream):
 VERSIONS = Stream("versions", ["id"], indirect_stream=True)
 BOARDS = BoardsGreenhopper("boardsGreenhopper",["id"])
 VELOCITY = Stream("velocity",["id"], indirect_stream=True)
+SPRINTS = Stream("sprints",["id"], indirect_stream=True)
 COMPONENTS = Stream("components", ["id"], indirect_stream=True)
 ISSUES = Issues("issues", ["id"])
 ISSUE_COMMENTS = Stream("issue_comments", ["id"], indirect_stream=True)
@@ -391,21 +410,22 @@ PROJECTS = Projects("projects", ["id"])
 CHANGELOGS = Stream("changelogs", ["id"], indirect_stream=True)
 
 ALL_STREAMS = [
-    #PROJECTS,
+    PROJECTS,
     BOARDS,
     VELOCITY,
-    #VERSIONS,
-    #COMPONENTS,
-    #ProjectTypes("project_types", ["key"]),
-    #Stream("project_categories", ["id"], path="/rest/api/2/projectCategory"),
-    #Stream("resolutions", ["id"], path="/rest/api/2/resolution"),
-    #Stream("roles", ["id"], path="/rest/api/2/role"),
-    #Users("users", ["accountId"]),
-    #ISSUES,
-    #ISSUE_COMMENTS,
-    #CHANGELOGS,
-    #ISSUE_TRANSITIONS,
-    #Worklogs("worklogs", ["id"]),
+    SPRINTS,
+    VERSIONS,
+    COMPONENTS,
+    ProjectTypes("project_types", ["key"]),
+    Stream("project_categories", ["id"], path="/rest/api/2/projectCategory"),
+    Stream("resolutions", ["id"], path="/rest/api/2/resolution"),
+    Stream("roles", ["id"], path="/rest/api/2/role"),
+    Users("users", ["accountId"]),
+    ISSUES,
+    ISSUE_COMMENTS,
+    CHANGELOGS,
+    ISSUE_TRANSITIONS,
+    Worklogs("worklogs", ["id"]),
 ]
 
 ALL_STREAM_IDS = [s.tap_stream_id for s in ALL_STREAMS]
