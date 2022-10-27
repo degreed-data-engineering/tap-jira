@@ -1364,7 +1364,7 @@
       ]
     },
     {
-      "tap_stream_id": "velocitySprints",
+      "tap_stream_id": "velocity",
       "key_properties": [
         "id"
       ],
@@ -1407,6 +1407,18 @@
                   "null",
                   "string"
                 ]
+              },
+              "velocityEstimated": {
+                "type": [
+                  "null",
+                  "number"
+                ]
+              },
+              "velocityCompleted": {
+                "type": [
+                  "null",
+                  "number"
+                ]
               }
             },
             "type": [
@@ -1420,7 +1432,7 @@
           ]
         }
       },
-      "stream": "velocitySprints",
+      "stream": "velocity",
       "metadata": [
         {
           "breadcrumb": [],
@@ -1443,136 +1455,196 @@
       ]
     },
     {
-      "tap_stream_id": "velocityStatEntries",
+      "tap_stream_id": "sprints",
+      "key_properties": [
+        "id"
+      ],
       "schema": {
-        "velocityStatEntries": {
-          "type": [
-            "null",
-            "object"
-          ],
-          "properties": {
-            "estimated": {
-              "type": [
-                "null",
-                "object"
-              ],
-              "properties": {
-                "value": {
-                  "type": [
-                    "null",
-                    "number"
-                  ]
-                },
-                "text": {
-                  "type": [
-                    "null",
-                    "string"
-                  ]
-                }
-              }
-            },
-            "completed": {
-              "type": [
-                "null",
-                "object"
-              ],
-              "properties": {
-                "value": {
-                  "type": [
-                    "null",
-                    "number"
-                  ]
-                },
-                "text": {
-                  "type": [
-                    "null",
-                    "string"
-                  ]
-                }
-              }
-            },
-            "allConsideredIssueKeys": {
-              "type": [
-                "null",
-                "array"
-              ],
-              "items": {
-                "type": [
-                  "null",
-                  "string"
-                ]
-              }
-            },
-            "estimatedEntries": {
-              "type": [
-                "null",
-                "array"
-              ],
-              "items": {
-                "type": [
-                  "null",
-                  "object"
-                ],
-                "properties": {
-                  "issueKey": {
-                    "type": [
-                      "null",
-                      "string"
-                    ]
-                  },
-                  "value": {
-                    "type": [
-                      "null",
-                      "number"
-                    ]
-                  }
-                }
-              }
-            },
-            "completedEntries": {
-              "type": [
-                "null",
-                "array"
-              ],
-              "items": {
-                "type": [
-                  "null",
-                  "object"
-                ],
-                "properties": {
-                  "issueKey": {
-                    "type": [
-                      "null",
-                      "string"
-                    ]
-                  },
-                  "value": {
-                    "type": [
-                      "null",
-                      "number"
-                    ]
-                  }
-                }
-              }
-            }
+        "properties": {
+          "id": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "self": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "state": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "startDate": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "endDate": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "completeDate": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "originBoardId": {
+            "type": [
+              "null",
+              "integer"
+            ]
           }
-        }
+        },
+        "type": [
+          "null",
+          "object"
+        ]
       },
-      "stream": "velocityStatEntries",
+      "stream": "sprints",
       "metadata": [
         {
           "breadcrumb": [],
           "metadata": {
-            "selected": true
+            "selected": true,
+            "table-key-properties": [
+              "id"
+            ]
           }
         },
         {
           "breadcrumb": [
             "properties",
-            "velocityStatEntries"
+            "id"
+          ],
+          "metadata": {
+            "inclusion": "automatic"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "self"
           ],
           "metadata": {
             "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "state"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "name"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "startDate"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "endDate"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "completeDate"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "originBoardId"
+          ],
+          "metadata": {
+            "inclusion": "available"
+          }
+        }
+      ]
+    },
+    {
+      "tap_stream_id": "sprintreports",
+      "key_properties": [
+        "issueId"
+      ],
+      "schema": {
+        "properties": {
+          "boardId": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "sprintId": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "issueId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }          
+        },
+        "type": [
+          "null",
+          "object"
+        ]
+      },
+      "stream": "sprintreports",
+      "metadata": [
+        {
+          "breadcrumb": [],
+          "metadata": {
+            "selected": true,
+            "table-key-properties": [
+              "boardId",
+              "sprintId",
+              "issueId"
+            ]
           }
         }
       ]
@@ -4514,7 +4586,10 @@
             ]
           }
         },
-        "type": "object"
+        "type": [
+          "null",
+          "object"
+        ]
       },
       "stream": "changelogs",
       "metadata": [

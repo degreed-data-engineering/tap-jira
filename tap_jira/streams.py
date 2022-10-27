@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 import pytz
 import singer
@@ -145,9 +146,10 @@ class BoardsAgile(Stream):
 
 class BoardsGreenhopper(Stream):
     def sync(self):
-        path = "/rest/greenhopper/1.0/rapidview"
-        boards = Context.client.request(self.tap_stream_id, "GET", path)['views']
-        self.write_page(boards)
+        if Context.is_selected(BOARDS.tap_stream_id):
+            path = "/rest/greenhopper/1.0/rapidview"
+            boards = Context.client.request(self.tap_stream_id, "GET", path)['views']
+            self.write_page(boards)
 
         # per board, get the Velocity statistics. This `for board in boards`-loop takes about 13 minutes in total to complete.
         if Context.is_selected(VELOCITY.tap_stream_id):
@@ -167,6 +169,18 @@ class BoardsGreenhopper(Stream):
                        ,"velocityCompleted": velocity['velocityStatEntries'][sprintId]['completed']['value']
                         }
                     sprint.update(velocitystats)
+
+                    # SPRINTREPORTS endpoint
+                    if Context.is_selected(SPRINTREPORTS.tap_stream_id):
+                        path = "/rest/greenhopper/1.0/rapid/charts/sprintreport?rapidViewId=" + boardId + "&sprintId=" + sprintId
+                        output_dict = Context.client.request(SPRINTREPORTS.tap_stream_id, "GET", path)["contents"]["issueKeysAddedDuringSprint"]
+                        # modify the issueKeysAddedDuringSprint output into something processable: change key into a value, and add the identifiers
+                        if len(output_dict) != 0: 
+                            modify_json = json.dumps(output_dict)
+                            modify_json = modify_json.replace('{','[{"boardId":' + boardId + ', "sprintId": ' + sprintId + ', "issueId": ').replace(': true,','}, {"boardId":' + boardId + ', "sprintId": ' + sprintId + ', "issueId":').replace(': true}','}]')
+                            modified_dict = json.loads(modify_json)
+                            SPRINTREPORTS.write_page(modified_dict)
+
                 VELOCITY.write_page(sprintData)
             LOGGER.info("Execution duration for Velocity endpoint: %s", singer.utils.now() - starttime)
 
@@ -400,6 +414,7 @@ class Worklogs(Stream):
 VERSIONS = Stream("versions", ["id"], indirect_stream=True)
 BOARDS = BoardsGreenhopper("boardsGreenhopper",["id"])
 VELOCITY = Stream("velocity",["id"], indirect_stream=True)
+SPRINTREPORTS = Stream("sprintreports",["sprintId","boardId","issueId"], indirect_stream=True)
 SPRINTS = Stream("sprints",["id"], indirect_stream=True)
 COMPONENTS = Stream("components", ["id"], indirect_stream=True)
 ISSUES = Issues("issues", ["id"])
@@ -414,6 +429,7 @@ ALL_STREAMS = [
     BOARDS,
     VELOCITY,
     SPRINTS,
+    SPRINTREPORTS,
     VERSIONS,
     COMPONENTS,
     ProjectTypes("project_types", ["key"]),
