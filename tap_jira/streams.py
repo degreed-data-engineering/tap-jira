@@ -146,49 +146,35 @@ class BoardsAgile(Stream):
 
 class BoardsGreenhopper(Stream):
     def sync(self):
+        # BOARDS endpoint
         if Context.is_selected(BOARDS.tap_stream_id):
             path = "/rest/greenhopper/1.0/rapidview"
             boards = Context.client.request(self.tap_stream_id, "GET", path)['views']
             self.write_page(boards)
 
-        # per board, get the Velocity statistics. This `for board in boards`-loop takes about 13 minutes in total to complete.
         if Context.is_selected(VELOCITY.tap_stream_id):
             starttime = singer.utils.now()
             for board in boards:
+
+                # VELOCITY endpoint
                 boardId = str(board['id'])
                 path = "/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=" + boardId
                 # get data from the Velocity endpoint
                 velocity = Context.client.request(VELOCITY.tap_stream_id, "GET", path)
                 sprintData = velocity['sprints']
-                # per Sprint in the Sprint-section of the data, add the Estimated value & Completed value from the VelocityStatEntries-section
+                # per Sprint in the Sprint-section of the data, add the Board id, Estimated value & Completed value from the VelocityStatEntries-section
                 for sprint in sprintData:
                     sprintId = str(sprint['id'])
                     velocitystats = {
-                        "boardId"          : boardId
+                        "boardId"          : board['id']
                        ,"velocityEstimated": velocity['velocityStatEntries'][sprintId]['estimated']['value']
                        ,"velocityCompleted": velocity['velocityStatEntries'][sprintId]['completed']['value']
                         }
                     sprint.update(velocitystats)
-
-                    # SPRINTREPORTS endpoint
-                    if Context.is_selected(SPRINTREPORTS.tap_stream_id):
-                        path = "/rest/greenhopper/1.0/rapid/charts/sprintreport?rapidViewId=" + boardId + "&sprintId=" + sprintId
-                        output_dict = Context.client.request(SPRINTREPORTS.tap_stream_id, "GET", path)["contents"]["issueKeysAddedDuringSprint"]
-                        # modify the issueKeysAddedDuringSprint output into something processable: change key into a value, and add the identifiers
-                        if len(output_dict) != 0: 
-                            modify_json = json.dumps(output_dict)
-                            modify_json = modify_json.replace('{','[{"boardId":' + boardId + ', "sprintId": ' + sprintId + ', "issueId": ').replace(': true,','}, {"boardId":' + boardId + ', "sprintId": ' + sprintId + ', "issueId":').replace(': true}','}]')
-                            modified_dict = json.loads(modify_json)
-                            SPRINTREPORTS.write_page(modified_dict)
-
                 VELOCITY.write_page(sprintData)
-            LOGGER.info("Execution duration for Velocity endpoint: %s", singer.utils.now() - starttime)
 
-        if Context.is_selected(SPRINTS.tap_stream_id):
-            starttime = singer.utils.now()
-            for board in boards:
-                if board['sprintSupportEnabled']:
-                    #starttime = singer.utils.now()
+                # SPRINTS endpoint
+                if Context.is_selected(SPRINTS.tap_stream_id) and board['sprintSupportEnabled']:
                     path = "/rest/agile/1.0/board/{}/sprint".format(board["id"])
                     page_num_offset = [SPRINTS.tap_stream_id, "offset", "page_num"]
                     page_num = Context.bookmark(page_num_offset) or 0
@@ -199,7 +185,20 @@ class BoardsGreenhopper(Stream):
                         singer.write_state(Context.state)
                     Context.set_bookmark(page_num_offset, None)
                     singer.write_state(Context.state)
-            LOGGER.info("Execution duration for Sprints endpoint: %s", singer.utils.now() - starttime)
+
+                # SPRINTREPORTS endpoint
+                for sprint in sprintData:
+                    if Context.is_selected(SPRINTREPORTS.tap_stream_id):
+                        path = "/rest/greenhopper/1.0/rapid/charts/sprintreport?rapidViewId=" + boardId + "&sprintId=" + sprintId
+                        output_dict = Context.client.request(SPRINTREPORTS.tap_stream_id, "GET", path)["contents"]["issueKeysAddedDuringSprint"]
+                        # modify the issueKeysAddedDuringSprint output into something processable: change key into a value, and add the identifiers
+                        if len(output_dict) != 0: 
+                            modify_json = json.dumps(output_dict)
+                            modify_json = modify_json.replace('{','[{"boardId":' + boardId + ', "sprintId": ' + sprintId + ', "issueId": ').replace(': true,','}, {"boardId":' + boardId + ', "sprintId": ' + sprintId + ', "issueId":').replace(': true}','}]')
+                            modified_dict = json.loads(modify_json)
+                            SPRINTREPORTS.write_page(modified_dict)
+
+            LOGGER.info("Execution duration for Velocity endpoint: %s", singer.utils.now() - starttime)
 
 class Projects(Stream):
     def sync_on_prem(self):
