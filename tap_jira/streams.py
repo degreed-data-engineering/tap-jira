@@ -189,6 +189,7 @@ class BoardsGreenhopper(Stream):
                 # SPRINTREPORTS endpoint
                 for sprint in sprintData:
                     if Context.is_selected(SPRINTREPORTS.tap_stream_id):
+                        sprintId = str(sprint['id'])
                         path = "/rest/greenhopper/1.0/rapid/charts/sprintreport?rapidViewId=" + boardId + "&sprintId=" + sprintId
                         output_dict = Context.client.request(SPRINTREPORTS.tap_stream_id, "GET", path)["contents"]["issueKeysAddedDuringSprint"]
                         # modify the issueKeysAddedDuringSprint output into something processable: change key into a value, and add the identifiers
