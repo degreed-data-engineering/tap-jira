@@ -4,10 +4,24 @@
     "null",
     "object"
   ],
-  "id": {
-    "type": [
-      "null",
-      "string"
-    ]
+  "properties": {
+    "boardId": {
+      "type": [
+        "null",
+        "integer"
+      ]
+    },
+    "sprintId": {
+      "type": [
+        "null",
+        "integer"
+      ]
+    },
+    "issueId": {
+      "type": [
+        "null",
+        "integer"
+      ]
+    }
   }
 }

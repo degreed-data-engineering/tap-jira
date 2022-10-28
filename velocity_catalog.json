@@ -1646,6 +1646,33 @@
               "issueId"
             ]
           }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "boardId"
+          ],
+          "metadata": {
+            "inclusion": "automatic"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "sprintId"
+          ],
+          "metadata": {
+            "inclusion": "automatic"
+          }
+        },
+        {
+          "breadcrumb": [
+            "properties",
+            "issueId"
+          ],
+          "metadata": {
+            "inclusion": "automatic"
+          }
         }
       ]
     },
