@@ -20,7 +20,7 @@
     "issueId": {
       "type": [
         "null",
-        "integer"
+        "string"
       ]
     }
   }
