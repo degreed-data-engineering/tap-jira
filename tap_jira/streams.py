@@ -151,12 +151,19 @@ class BoardsGreenhopper(Stream):
             path = "/rest/greenhopper/1.0/rapidview"
             boards = Context.client.request(self.tap_stream_id, "GET", path)['views']
             self.write_page(boards)
-
+            LOGGER.info("##PR## Boards:")
+            LOGGER.info(boards)
         for board in boards:
+
+            LOGGER.info("##PR## Board:")
+            LOGGER.info(board)
             if Context.is_selected(VELOCITY.tap_stream_id):
                 # VELOCITY endpoint
                 board_id = str(board["id"])
                 path = ("/rest/greenhopper/1.0/rapid/charts/velocity.json?rapidViewId=" + board_id)
+
+                LOGGER.info("##PR## Path:")
+                LOGGER.info(path)
                 # get data from the Velocity endpoint
                 velocity = Context.client.request(VELOCITY.tap_stream_id, "GET", path)
 
