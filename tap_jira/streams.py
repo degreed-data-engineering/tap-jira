@@ -62,9 +62,14 @@ def sync_sub_streams(page):
             ISSUE_COMMENTS.write_page(comments)
         changelogs = issue.pop("changelog")["histories"]
         if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
+            changelogs_to_store = []
+            interested_changelog_fields = set(["status", "priority"])
             for changelog in changelogs:
                 changelog["issueId"] = issue["id"]
-            CHANGELOGS.write_page(changelogs)
+                # just store changelogs of which fields we are interested in
+                if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
+                    changelogs_to_store.append(changelog)
+            CHANGELOGS.write_page(changelogs_to_store)
         transitions = issue.pop("transitions")
         if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
             for transition in transitions:
