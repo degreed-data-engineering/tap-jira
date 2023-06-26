@@ -63,7 +63,7 @@ def sync_sub_streams(page):
         changelogs = issue.pop("changelog")["histories"]
         if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
             changelogs_to_store = []
-            interested_changelog_fields = set(["status", "priority"])
+            interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
             for changelog in changelogs:
                 changelog["issueId"] = issue["id"]
                 # just store changelogs of which fields we are interested in
