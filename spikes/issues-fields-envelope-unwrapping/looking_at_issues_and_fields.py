@@ -52,7 +52,7 @@ class Client():
 
 
     def test_credentials_are_authorized(self):
-        self.request('issues', "GET", "/rest/api/2/search",
+        self.request('issues', "GET", "/rest/api/3/search/jql",
                      params={"maxResults": 1})
 
 
