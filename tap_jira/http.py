@@ -301,6 +301,7 @@ class Paginator():
         """
         params = kwargs.pop("params", {}).copy()
         while self.next_page_num is not None:
+            params.setdefault("maxResults", 50)
             params["startAt"] = self.next_page_num
             if self.order_by:
                 params["orderBy"] = self.order_by
