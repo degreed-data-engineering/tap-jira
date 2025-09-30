@@ -292,31 +292,25 @@ class Paginator():
         self.items_key = items_key
 
     def pages(self, *args, **kwargs):
-        """Returns a generator which yields pages of data. When a given page is
-        yielded, the next_page_num property can be used to know what the index
-        of the next page is (useful for bookmarking).
+        """Returns a generator which yields pages of data."""
 
-        :param args: Passed to Client.request
-        :param kwargs: Passed to Client.request
-        """
         params = kwargs.pop("params", {}).copy()
         while self.next_page_num is not None:
+            # Always ensure defaults
             params.setdefault("maxResults", 50)
             params["startAt"] = self.next_page_num
             if self.order_by:
                 params["orderBy"] = self.order_by
+
             response = self.client.request(*args, params=params, **kwargs)
+
             if self.items_key:
-                page = response[self.items_key]
+                page = response.get(self.items_key, [])
             else:
                 page = response
 
-            # Accounts for responses that don't nest their results in a
-            # key by falling back to the params `maxResults` setting.
-            if 'maxResults' in response:
-                max_results = response['maxResults']
-            else:
-                max_results = params.get('maxResults', 50)   # safe fallback
+            # Jira Cloud sometimes omits 'maxResults'
+            max_results = response.get("maxResults", params["maxResults"])
 
             if len(page) < max_results:
                 self.next_page_num = None
@@ -325,3 +319,4 @@ class Paginator():
 
             if page:
                 yield page
+
