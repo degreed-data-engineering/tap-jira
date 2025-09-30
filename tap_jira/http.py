@@ -315,7 +315,7 @@ class Paginator():
             if 'maxResults' in response:
                 max_results = response['maxResults']
             else:
-                max_results = params['maxResults']
+                max_results = params.get('maxResults', 50)   # safe fallback
 
             if len(page) < max_results:
                 self.next_page_num = None

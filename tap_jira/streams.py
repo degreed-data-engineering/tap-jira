@@ -370,7 +370,8 @@ class Issues(Stream):
         params = {"fields": "*all",
                   "expand": "changelog,transitions",
                   "validateQuery": "strict",
-                  "jql": jql}
+                  "jql": jql,
+                  "maxResults": DEFAULT_PAGE_SIZE}
         page_num = Context.bookmark(page_num_offset) or 0
         pager = Paginator(Context.client, items_key="issues", page_num=page_num)
         for page in pager.pages(self.tap_stream_id,
