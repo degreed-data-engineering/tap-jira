@@ -56,6 +56,6 @@ class Context():
 
     @classmethod
     def retrieve_timezone(cls):
-        response = cls.client.send("GET", "/rest/api/2/myself")
+        response = cls.client.send("GET", "/rest/api/3/myself")
         check_status(response)
         return response.json()["timeZone"]

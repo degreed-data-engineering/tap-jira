@@ -241,7 +241,7 @@ class Projects(Stream):
     def sync_on_prem(self):
         """ Sync function for the on prem instances"""
         projects = Context.client.request(
-            self.tap_stream_id, "GET", "/rest/api/2/project",
+            self.tap_stream_id, "GET", "/rest/api/3/project",
             params={"expand": "description,lead,url,projectKeys"})
         for project in projects:
             # The Jira documentation suggests that a "versions" key may appear
@@ -253,7 +253,7 @@ class Projects(Stream):
         self.write_page(projects)
         if Context.is_selected(VERSIONS.tap_stream_id):
             for project in projects:
-                path = "/rest/api/2/project/{}/version".format(project["id"])
+                path = "/rest/api/3/project/{}/version".format(project["id"])
                 pager = Paginator(Context.client, order_by="sequence")
                 for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
                     # Transform userReleaseDate and userStartDate values to 'yyyy-mm-dd' format.
@@ -262,7 +262,7 @@ class Projects(Stream):
                     VERSIONS.write_page(page)
         if Context.is_selected(COMPONENTS.tap_stream_id):
             for project in projects:
-                path = "/rest/api/2/project/{}/component".format(project["id"])
+                path = "/rest/api/3/project/{}/component".format(project["id"])
                 pager = Paginator(Context.client)
                 for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
                     COMPONENTS.write_page(page)
@@ -277,7 +277,7 @@ class Projects(Stream):
                 "startAt": offset #the offset to start at for the next page
             }
             projects = Context.client.request(
-                self.tap_stream_id, "GET", "/rest/api/2/project/search",
+                self.tap_stream_id, "GET", "/rest/api/3/project/search",
                 params=params)
             for project in projects.get('values'):
                 # The Jira documentation suggests that a "versions" key may appear
@@ -289,7 +289,7 @@ class Projects(Stream):
             self.write_page(projects.get('values'))
             if Context.is_selected(VERSIONS.tap_stream_id):
                 for project in projects.get('values'):
-                    path = "/rest/api/2/project/{}/version".format(project["id"])
+                    path = "/rest/api/3/project/{}/version".format(project["id"])
                     pager = Paginator(Context.client, order_by="sequence")
                     for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
                         # Transform userReleaseDate and userStartDate values to 'yyyy-mm-dd' format.
@@ -299,7 +299,7 @@ class Projects(Stream):
                         VERSIONS.write_page(page)
             if Context.is_selected(COMPONENTS.tap_stream_id):
                 for project in projects.get('values'):
-                    path = "/rest/api/2/project/{}/component".format(project["id"])
+                    path = "/rest/api/3/project/{}/component".format(project["id"])
                     pager = Paginator(Context.client)
                     for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
                         COMPONENTS.write_page(page)
@@ -322,7 +322,7 @@ class Projects(Stream):
 
 class ProjectTypes(Stream):
     def sync(self):
-        path = "/rest/api/2/project/type"
+        path = "/rest/api/3/project/type"
         types = Context.client.request(self.tap_stream_id, "GET", path)
         for type_ in types:
             type_.pop("icon")
@@ -350,7 +350,7 @@ class Users(Stream):
                           "includeInactiveUsers": True}
                 pager = Paginator(Context.client, items_key='values')
                 for page in pager.pages(self.tap_stream_id, "GET",
-                                        "/rest/api/2/group/member",
+                                        "/rest/api/3/group/member",
                                         params=params):
                     self.write_page(page)
             except JiraNotFoundError:
@@ -363,43 +363,53 @@ class Issues(Stream):
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
 
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
+        if not last_updated:
+            LOGGER.warning(f"No valid 'last_updated' found for {self.tap_stream_id}, using start_date from config.")
+            last_updated = Context.config_start_date()  # fallback if you have a default start_date in config
+
         timezone = Context.retrieve_timezone()
         start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
 
-        jql = "updated >= '{}' order by updated asc".format(start_date)
-        params = {"fields": "*all",
-                  "expand": "changelog,transitions",
-                  "validateQuery": "strict",
-                  "jql": jql}
+        jql = f"updated >= '{start_date}' order by updated asc"
+        params = {
+            "fields": "*all",
+            "expand": "changelog,transitions",
+            "validateQuery": "strict",
+            "jql": jql,
+            "maxResults": DEFAULT_PAGE_SIZE
+        }
+
         page_num = Context.bookmark(page_num_offset) or 0
         pager = Paginator(Context.client, items_key="issues", page_num=page_num)
-        for page in pager.pages(self.tap_stream_id,
-                                "GET", "/rest/api/2/search",
-                                params=params):
+
+        for page in pager.pages(self.tap_stream_id, "GET", "/rest/api/3/search/jql", params=params):
+            # 🚨 Guard 1: Skip if page is empty
+            if not page:
+                LOGGER.info(f"No issues returned for JQL = {jql}, skipping this page.")
+                continue
+
             # sync comments and changelogs for each issue
             sync_sub_streams(page)
+
             for issue in page:
                 issue['fields'].pop('worklog', None)
-                # The JSON schema for the search endpoint indicates an "operations"
-                # field can be present. This field is self-referential, making it
-                # difficult to deal with - we would have to flatten the operations
-                # and just have each operation include the IDs of other operations
-                # it references. However the operations field has something to do
-                # with the UI within Jira - I believe the operations are parts of
-                # the "menu" bar for each issue. This is of questionable utility,
-                # so we decided to just strip the field out for now.
                 issue['fields'].pop('operations', None)
 
-            # Grab last_updated before transform in write_page
-            last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
+            # 🚨 Guard 2: Protect against missing updated field
+            if not page[-1]["fields"].get("updated"):
+                LOGGER.warning("Last issue in page missing 'updated' field, skipping bookmark update.")
+                continue
 
+            last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
             self.write_page(page)
 
             Context.set_bookmark(page_num_offset, pager.next_page_num)
             singer.write_state(Context.state)
+
         Context.set_bookmark(page_num_offset, None)
         Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
+
 
 
 class Worklogs(Stream):
@@ -409,7 +419,7 @@ class Worklogs(Stream):
         return Context.client.request(
             self.tap_stream_id,
             "GET",
-            "/rest/api/2/worklog/updated",
+            "/rest/api/3/worklog/updated",
             params={"since": since_ts},
         )
 
@@ -417,7 +427,7 @@ class Worklogs(Stream):
         if not ids:
             return []
         return Context.client.request(
-            self.tap_stream_id, "POST", "/rest/api/2/worklog/list",
+            self.tap_stream_id, "POST", "/rest/api/3/worklog/list",
             headers={"Content-Type": "application/json"},
             data=json.dumps({"ids": ids}),
         )
@@ -473,9 +483,9 @@ ALL_STREAMS = [
     VERSIONS,
     COMPONENTS,
     ProjectTypes("project_types", ["key"]),
-    Stream("project_categories", ["id"], path="/rest/api/2/projectCategory"),
-    Stream("resolutions", ["id"], path="/rest/api/2/resolution"),
-    Stream("roles", ["id"], path="/rest/api/2/role"),
+    Stream("project_categories", ["id"], path="/rest/api/3/projectCategory"),
+    Stream("resolutions", ["id"], path="/rest/api/3/resolution"),
+    Stream("roles", ["id"], path="/rest/api/3/role"),
     Users("users", ["accountId"]),
     ISSUES,
     ISSUE_COMMENTS,

@@ -275,14 +275,14 @@ class Client():
 
     def test_credentials_are_authorized(self):
         # Assume that everyone has issues, so we try and hit that endpoint
-        self.request("issues", "GET", "/rest/api/2/search",
+        self.request("issues", "GET", "/rest/api/3/search/jql",
                      params={"maxResults": 1})
 
     def test_basic_credentials_are_authorized(self):
         # Make a call to myself endpoint for verify creds
         # Here, we are retrieving serverInfo for the Jira instance by which credentials will also be verified.
         # Assign True value to is_on_prem_instance property for on-prem Jira instance
-        self.is_on_prem_instance = self.request("users","GET","/rest/api/2/serverInfo").get('deploymentType') == "Server"
+        self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
 
 class Paginator():
     def __init__(self, client, page_num=0, order_by=None, items_key="values"):
@@ -292,30 +292,25 @@ class Paginator():
         self.items_key = items_key
 
     def pages(self, *args, **kwargs):
-        """Returns a generator which yields pages of data. When a given page is
-        yielded, the next_page_num property can be used to know what the index
-        of the next page is (useful for bookmarking).
+        """Returns a generator which yields pages of data."""
 
-        :param args: Passed to Client.request
-        :param kwargs: Passed to Client.request
-        """
         params = kwargs.pop("params", {}).copy()
         while self.next_page_num is not None:
+            # Always ensure defaults
+            params.setdefault("maxResults", 50)
             params["startAt"] = self.next_page_num
             if self.order_by:
                 params["orderBy"] = self.order_by
+
             response = self.client.request(*args, params=params, **kwargs)
+
             if self.items_key:
-                page = response[self.items_key]
+                page = response.get(self.items_key, [])
             else:
                 page = response
 
-            # Accounts for responses that don't nest their results in a
-            # key by falling back to the params `maxResults` setting.
-            if 'maxResults' in response:
-                max_results = response['maxResults']
-            else:
-                max_results = params['maxResults']
+            # Jira Cloud sometimes omits 'maxResults'
+            max_results = response.get("maxResults", params["maxResults"])
 
             if len(page) < max_results:
                 self.next_page_num = None
@@ -324,3 +319,4 @@ class Paginator():
 
             if page:
                 yield page
+
