@@ -397,7 +397,7 @@ class Issues(Stream):
             os.getenv("TAP_JIRA_END_DATE")
             or os.getenv("tapJiraEndDate")
         )
-        config_end_date = Context.config("end_date") or env_end_date
+        config_end_date = Context.config.get("end_date") or env_end_date
 
         end_date = None
         if config_end_date:
@@ -479,6 +479,7 @@ class Issues(Stream):
         Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
         LOGGER.info(f"Finished syncing issues up to: {last_updated.isoformat()}")
+
 
 
 class Worklogs(Stream):
