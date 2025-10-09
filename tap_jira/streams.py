@@ -362,15 +362,34 @@ class Issues(Stream):
         updated_bookmark = [self.tap_stream_id, "updated"]
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
 
+        # ✅ Retrieve start date
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
         if not last_updated:
             LOGGER.warning(f"No valid 'last_updated' found for {self.tap_stream_id}, using start_date from config.")
-            last_updated = Context.config_start_date()  # fallback if you have a default start_date in config
+            last_updated = Context.config_start_date()  # fallback
+
+        # ✅ Retrieve end date (optional)
+        config_end_date = Context.config("end_date") or os.getenv("TAP_JIRA_END_DATE")
+        end_date = None
+        if config_end_date:
+            try:
+                end_date = utils.strptime_to_utc(config_end_date)
+            except Exception as e:
+                LOGGER.warning(f"Invalid end_date format: {config_end_date}. Ignoring. Error: {e}")
 
         timezone = Context.retrieve_timezone()
-        start_date = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+        start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+        end_date_str = (
+            end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+            if end_date else None
+        )
 
-        jql = f"updated >= '{start_date}' order by updated asc"
+        # ✅ Build JQL with optional end_date
+        if end_date_str:
+            jql = f"updated >= '{start_date_str}' AND updated < '{end_date_str}' order by updated asc"
+        else:
+            jql = f"updated >= '{start_date_str}' order by updated asc"
+
         params = {
             "fields": "*all",
             "expand": "changelog,transitions",
@@ -378,6 +397,8 @@ class Issues(Stream):
             "jql": jql,
             "maxResults": DEFAULT_PAGE_SIZE
         }
+
+        LOGGER.info(f"Fetching issues with JQL: {jql}")
 
         page_num = Context.bookmark(page_num_offset) or 0
         pager = Paginator(Context.client, items_key="issues", page_num=page_num)
@@ -409,8 +430,6 @@ class Issues(Stream):
         Context.set_bookmark(page_num_offset, None)
         Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
-
-
 
 class Worklogs(Stream):
     def _fetch_ids(self, last_updated):
