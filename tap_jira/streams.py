@@ -362,21 +362,33 @@ class Issues(Stream):
         updated_bookmark = [self.tap_stream_id, "updated"]
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
 
-        # ✅ Retrieve start date
-        last_updated = Context.update_start_date_bookmark(updated_bookmark)
+        # ✅ STEP 1: Resolve start_date (priority: env var > state bookmark > config)
+        env_start_date = os.getenv("TAP_JIRA_START_DATE")
+        if env_start_date:
+            try:
+                last_updated = utils.strptime_to_utc(env_start_date)
+                LOGGER.info(f"Using start_date from env var TAP_JIRA_START_DATE: {env_start_date}")
+            except Exception as e:
+                LOGGER.warning(f"Invalid TAP_JIRA_START_DATE format: {env_start_date}. Ignoring. Error: {e}")
+                last_updated = Context.update_start_date_bookmark(updated_bookmark)
+        else:
+            last_updated = Context.update_start_date_bookmark(updated_bookmark)
+
         if not last_updated:
             LOGGER.warning(f"No valid 'last_updated' found for {self.tap_stream_id}, using start_date from config.")
             last_updated = Context.config_start_date()  # fallback
 
-        # ✅ Retrieve end date (optional)
+        # ✅ STEP 2: Resolve optional end_date (env or config)
         config_end_date = Context.config("end_date") or os.getenv("TAP_JIRA_END_DATE")
         end_date = None
         if config_end_date:
             try:
                 end_date = utils.strptime_to_utc(config_end_date)
+                LOGGER.info(f"Using end_date from TAP_JIRA_END_DATE: {config_end_date}")
             except Exception as e:
                 LOGGER.warning(f"Invalid end_date format: {config_end_date}. Ignoring. Error: {e}")
 
+        # ✅ STEP 3: Format dates with timezone
         timezone = Context.retrieve_timezone()
         start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
         end_date_str = (
@@ -384,7 +396,7 @@ class Issues(Stream):
             if end_date else None
         )
 
-        # ✅ Build JQL with optional end_date
+        # ✅ STEP 4: Build JQL dynamically
         if end_date_str:
             jql = f"updated >= '{start_date_str}' AND updated < '{end_date_str}' order by updated asc"
         else:
@@ -400,6 +412,7 @@ class Issues(Stream):
 
         LOGGER.info(f"Fetching issues with JQL: {jql}")
 
+        # ✅ STEP 5: Initialize pagination
         page_num = Context.bookmark(page_num_offset) or 0
         pager = Paginator(Context.client, items_key="issues", page_num=page_num)
 
@@ -409,7 +422,7 @@ class Issues(Stream):
                 LOGGER.info(f"No issues returned for JQL = {jql}, skipping this page.")
                 continue
 
-            # sync comments and changelogs for each issue
+            # ✅ Sync substreams (changelogs, comments, etc.)
             sync_sub_streams(page)
 
             for issue in page:
@@ -427,9 +440,11 @@ class Issues(Stream):
             Context.set_bookmark(page_num_offset, pager.next_page_num)
             singer.write_state(Context.state)
 
+        # ✅ STEP 6: Finalize bookmarks and save state
         Context.set_bookmark(page_num_offset, None)
         Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
+        LOGGER.info(f"Finished syncing issues up to: {last_updated.isoformat()}")
 
 class Worklogs(Stream):
     def _fetch_ids(self, last_updated):
