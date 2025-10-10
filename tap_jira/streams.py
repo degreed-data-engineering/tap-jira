@@ -368,6 +368,7 @@ class Issues(Stream):
             os.getenv("TAP_JIRA_START_DATE")
             or os.getenv("tapJiraStartDate")
         )
+        last_updated = None
 
         if env_start_date:
             try:
@@ -381,31 +382,38 @@ class Issues(Stream):
                     f"Invalid start_date format in environment variable: {env_start_date}. "
                     f"Falling back to state bookmark. Error: {e}"
                 )
-                last_updated = Context.update_start_date_bookmark(updated_bookmark)
-        else:
-            last_updated = Context.update_start_date_bookmark(updated_bookmark)
 
+        # ✅ Try state bookmark if env not provided or invalid
         if not last_updated:
-            LOGGER.warning(
-                f"No valid 'last_updated' found for {self.tap_stream_id}, "
-                f"using start_date from config."
-            )
-            last_updated = Context.config_start_date()  # fallback
+            state_value = Context.bookmark(updated_bookmark)
+            if state_value:
+                try:
+                    last_updated = utils.strptime_to_utc(state_value)
+                    LOGGER.info(f"Using start_date from state bookmark: {state_value}")
+                except Exception as e:
+                    LOGGER.warning(
+                        f"Invalid state bookmark format for {updated_bookmark}: {state_value}. "
+                        f"Falling back to config. Error: {e}"
+                    )
+
+        # ✅ Fallback to config if neither env nor state found
+        if not last_updated:
+            last_updated = Context.config_start_date()
+            LOGGER.info(f"No state found. Using start_date from config: {last_updated}")
 
         # ✅ STEP 2: Resolve optional end_date (env or config)
         env_end_date = (
             os.getenv("TAP_JIRA_END_DATE")
             or os.getenv("tapJiraEndDate")
         )
-        config_end_date = Context.config.get("end_date") or env_end_date
+        config_end_date = env_end_date or Context.config.get("end_date")
 
         end_date = None
         if config_end_date:
             try:
                 end_date = utils.strptime_to_utc(config_end_date)
                 LOGGER.info(
-                    f"Using end_date from environment variable "
-                    f"({'TAP_JIRA_END_DATE' if os.getenv('TAP_JIRA_END_DATE') else 'tapJiraEndDate'}): {config_end_date}"
+                    f"Using end_date from environment variable/config: {config_end_date}"
                 )
             except Exception as e:
                 LOGGER.warning(
