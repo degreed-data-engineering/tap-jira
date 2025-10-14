@@ -358,17 +358,6 @@ class Users(Stream):
                 LOGGER.info("Could not find group \"%s\", skipping", group)
 
 
-import os
-import pytz
-import singer
-from singer import utils
-from .http import Paginator
-from .context import Context
-
-LOGGER = singer.get_logger()
-DEFAULT_PAGE_SIZE = 50
-
-
 class Issues(Stream):
     def sync(self):
         updated_bookmark = [self.tap_stream_id, "updated"]
@@ -376,6 +365,7 @@ class Issues(Stream):
 
         # STEP 1: Resolve start_date (priority: env var > state bookmark > config)
         last_updated = None
+        source_used = None
 
         env_start_date = (
             os.getenv("TAP_JIRA_START_DATE")
@@ -396,10 +386,11 @@ class Issues(Stream):
         config_normalized = _normalize_date_string(config_raw)
 
         IGNORED_DEFAULTS = {
-            "2021-01-01T00:00:00Z", "2021-01-01",
-            "2020-01-01T00:00:00Z", "2020-01-01"
+            "2021-01-01", "2021-01-01T00:00:00Z",
+            "2020-01-01", "2020-01-01T00:00:00Z"
         }
 
+        # Ignore default Meltano-injected or identical values
         if (
             not env_start_date
             or env_normalized in IGNORED_DEFAULTS
@@ -408,67 +399,70 @@ class Issues(Stream):
         ):
             LOGGER.info(
                 f"Ignoring injected TAP_JIRA_START_DATE ({env_normalized}) "
-                f"matching default or config ({config_normalized})."
+                f"matching default/config ({config_normalized})."
             )
             env_start_date = None
         else:
-            LOGGER.info(f"Keeping env TAP_JIRA_START_DATE: {env_normalized}")
+            LOGGER.info(f"Keeping TAP_JIRA_START_DATE from environment: {env_normalized}")
 
-        # ✅ 1️⃣ Use environment variable if valid and non-empty
+        # 1️⃣ Use environment variable if valid
         if env_start_date and env_start_date.strip():
             try:
                 last_updated = utils.strptime_to_utc(env_start_date.strip())
-                LOGGER.info(f"Using start_date from environment variable: {env_start_date}")
+                source_used = f"ENV VAR ({env_start_date})"
             except Exception as e:
                 LOGGER.warning(
-                    f"Invalid start_date format in environment variable: {env_start_date}. "
-                    f"Falling back to state bookmark. Error: {e}"
+                    f"Invalid start_date in env: {env_start_date}. "
+                    f"Error: {e}. Checking state next."
                 )
-        else:
-            LOGGER.info("Environment start_date empty or invalid, checking state file next.")
 
-        # ✅ 2️⃣ Fallback to state bookmark
+        # 2️⃣ Fallback to state bookmark
         if not last_updated:
             state_value = Context.bookmark(updated_bookmark)
             if state_value and str(state_value).strip():
                 try:
                     last_updated = utils.strptime_to_utc(str(state_value).strip())
-                    LOGGER.info(f"Using start_date from state file bookmark: {state_value}")
+                    source_used = f"STATE ({state_value})"
                 except Exception as e:
                     LOGGER.warning(
-                        f"Invalid state bookmark format: {state_value}. "
-                        f"Falling back to config. Error: {e}"
+                        f"Invalid state bookmark format: {state_value}. Error: {e}"
                     )
 
-        # ✅ 3️⃣ Fallback to config
+        # 3️⃣ Fallback to config
         if not last_updated:
-            last_updated = Context.config.get("start_date")
-            LOGGER.info(f"No valid env or state found. Using start_date from config: {last_updated}")
+            cfg_date = Context.config.get("start_date")
+            if cfg_date:
+                try:
+                    last_updated = utils.strptime_to_utc(str(cfg_date).strip())
+                    source_used = f"CONFIG ({cfg_date})"
+                except Exception as e:
+                    LOGGER.warning(
+                        f"Invalid config start_date: {cfg_date}. Error: {e}"
+                    )
 
-        # STEP 2: Resolve optional end_date (env or config)
-        env_end_date = (
-            os.getenv("TAP_JIRA_END_DATE")
-            or os.getenv("tapJiraEndDate")
-        )
-        config_end_date = Context.config.get("end_date")
+        # Final guard
+        if not last_updated:
+            raise Exception("No valid start_date could be determined from env, state, or config.")
 
+        LOGGER.info(f"✅ start_date source resolved from {source_used}")
+
+        # STEP 2: Resolve optional end_date (env > config)
         end_date = None
+        env_end_date = os.getenv("TAP_JIRA_END_DATE") or os.getenv("tapJiraEndDate")
+        cfg_end_date = Context.config.get("end_date")
+
         if env_end_date and env_end_date.strip():
             try:
                 end_date = utils.strptime_to_utc(env_end_date.strip())
-                LOGGER.info(f"Using end_date from environment variable: {env_end_date}")
+                LOGGER.info(f"Using end_date from environment: {env_end_date}")
             except Exception as e:
-                LOGGER.warning(
-                    f"Invalid end_date format in environment variable: {env_end_date}. Error: {e}"
-                )
-        elif config_end_date and str(config_end_date).strip():
+                LOGGER.warning(f"Invalid TAP_JIRA_END_DATE: {env_end_date}. Error: {e}")
+        elif cfg_end_date and str(cfg_end_date).strip():
             try:
-                end_date = utils.strptime_to_utc(str(config_end_date).strip())
-                LOGGER.info(f"Using end_date from config: {config_end_date}")
+                end_date = utils.strptime_to_utc(str(cfg_end_date).strip())
+                LOGGER.info(f"Using end_date from config: {cfg_end_date}")
             except Exception as e:
-                LOGGER.warning(
-                    f"Invalid end_date format in config: {config_end_date}. Error: {e}"
-                )
+                LOGGER.warning(f"Invalid config end_date: {cfg_end_date}. Error: {e}")
 
         # STEP 3: Format dates with timezone
         timezone = Context.retrieve_timezone()
@@ -482,14 +476,12 @@ class Issues(Stream):
             else None
         )
 
-        # STEP 4: Build JQL dynamically
-        if end_date_str:
-            jql = (
-                f"updated >= '{start_date_str}' AND updated < '{end_date_str}' "
-                f"order by updated asc"
-            )
-        else:
-            jql = f"updated >= '{start_date_str}' order by updated asc"
+        # STEP 4: Build JQL
+        jql = (
+            f"updated >= '{start_date_str}' AND updated < '{end_date_str}' order by updated asc"
+            if end_date_str
+            else f"updated >= '{start_date_str}' order by updated asc"
+        )
 
         params = {
             "fields": "*all",
@@ -509,7 +501,7 @@ class Issues(Stream):
             self.tap_stream_id, "GET", "/rest/api/3/search/jql", params=params
         ):
             if not page:
-                LOGGER.info(f"No issues returned for JQL = {jql}, skipping this page.")
+                LOGGER.info("No issues returned for JQL; skipping page.")
                 continue
 
             sync_sub_streams(page)
@@ -519,7 +511,7 @@ class Issues(Stream):
                 issue["fields"].pop("operations", None)
 
             if not page[-1]["fields"].get("updated"):
-                LOGGER.warning("Last issue missing 'updated', skipping bookmark update.")
+                LOGGER.warning("Last issue missing 'updated'; skipping bookmark update.")
                 continue
 
             last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
@@ -528,7 +520,7 @@ class Issues(Stream):
             Context.set_bookmark(page_num_offset, pager.next_page_num)
             singer.write_state(Context.state)
 
-        # STEP 6: Finalize
+        # STEP 6: Finalize bookmarks
         Context.set_bookmark(page_num_offset, None)
         Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
