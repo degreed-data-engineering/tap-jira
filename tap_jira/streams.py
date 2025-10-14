@@ -364,42 +364,41 @@ class Issues(Stream):
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
 
         # ✅ STEP 1: Resolve start_date (priority: env var > state bookmark > config)
-        env_start_date = (
-            os.getenv("TAP_JIRA_START_DATE")
-            or os.getenv("tapJiraStartDate")
-        )
-        last_updated = None
+last_updated = None
 
-        if env_start_date:
-            try:
-                last_updated = utils.strptime_to_utc(env_start_date)
-                LOGGER.info(
-                    f"Using start_date from environment variable "
-                    f"({'TAP_JIRA_START_DATE' if os.getenv('TAP_JIRA_START_DATE') else 'tapJiraStartDate'}): {env_start_date}"
-                )
-            except Exception as e:
-                LOGGER.warning(
-                    f"Invalid start_date format in environment variable: {env_start_date}. "
-                    f"Falling back to state bookmark. Error: {e}"
-                )
+# Fetch environment variable first
+env_start_date = (
+    os.getenv("TAP_JIRA_START_DATE")
+    or os.getenv("tapJiraStartDate")
+)
 
-        # ✅ Try state bookmark if env not provided or invalid
-        if not last_updated:
-            state_value = Context.bookmark(updated_bookmark)
-            if state_value:
-                try:
-                    last_updated = utils.strptime_to_utc(state_value)
-                    LOGGER.info(f"Using start_date from state bookmark: {state_value}")
-                except Exception as e:
-                    LOGGER.warning(
-                        f"Invalid state bookmark format for {updated_bookmark}: {state_value}. "
-                        f"Falling back to config. Error: {e}"
-                    )
+# 🧠 Ignore Meltano's default injected start_date (e.g., '2021-01-01')
+if env_start_date in ["2021-01-01", "2021-01-01T00:00:00Z", "2020-01-01"]:
+    LOGGER.info(f"Ignoring default TAP_JIRA_START_DATE injected by Meltano: {env_start_date}")
+    env_start_date = None
 
-        # ✅ Fallback to config if neither env nor state found
-        if not last_updated:
-            last_updated = Context.config_start_date()
-            LOGGER.info(f"No state found. Using start_date from config: {last_updated}")
+# ✅ 1️⃣ Use environment variable if valid
+if env_start_date:
+    try:
+        last_updated = utils.strptime_to_utc(env_start_date)
+        LOGGER.info(f"Using start_date from environment variable: {env_start_date}")
+    except Exception as e:
+        LOGGER.warning(f"Invalid start_date format in environment variable: {env_start_date}. Error: {e}")
+
+# ✅ 2️⃣ Fallback to state bookmark if no valid env var
+if not last_updated:
+    state_value = Context.bookmark(updated_bookmark)
+    if state_value:
+        try:
+            last_updated = utils.strptime_to_utc(state_value)
+            LOGGER.info(f"Using start_date from state file bookmark: {state_value}")
+        except Exception as e:
+            LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
+
+# ✅ 3️⃣ Fallback to config if neither env nor state found
+if not last_updated:
+    last_updated = Context.config_start_date()
+    LOGGER.info(f"No valid env or state found. Using start_date from meltano.yml config: {last_updated}")
 
         # ✅ STEP 2: Resolve optional end_date (env or config)
         env_end_date = (
