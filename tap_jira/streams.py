@@ -405,6 +405,11 @@ class Issues(Stream):
         else:
             LOGGER.info(f"Keeping TAP_JIRA_START_DATE from environment: {env_normalized}")
 
+        # 🩹 Ensure empty env var doesn't block state fallback
+        if env_start_date is not None and env_start_date.strip() == "":
+            LOGGER.info("Empty TAP_JIRA_START_DATE detected — skipping to state bookmark fallback.")
+            env_start_date = None
+
         # 1️⃣ Use environment variable if valid
         if env_start_date and env_start_date.strip():
             try:
@@ -440,9 +445,14 @@ class Issues(Stream):
                         f"Invalid config start_date: {cfg_date}. Error: {e}"
                     )
 
-        # Final guard
+        # 🧩 Final fallback (safe default)
         if not last_updated:
-            raise Exception("No valid start_date could be determined from env, state, or config.")
+            default_fallback = "2021-01-01T00:00:00Z"
+            LOGGER.warning(
+                f"No valid start_date found in env/state/config — falling back to {default_fallback}."
+            )
+            last_updated = utils.strptime_to_utc(default_fallback)
+            source_used = "DEFAULT FALLBACK (2021-01-01)"
 
         LOGGER.info(f"✅ start_date source resolved from {source_used}")
 
@@ -525,6 +535,7 @@ class Issues(Stream):
         Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
         LOGGER.info(f"Finished syncing issues up to: {last_updated.isoformat()}")
+
 
 
 class Worklogs(Stream):
