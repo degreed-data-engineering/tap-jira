@@ -392,7 +392,7 @@ class Issues(Stream):
                 return str(value).strip()
 
         env_normalized = _normalize_date_string(env_start_date)
-        config_raw = Context.config_start_date()
+        config_raw = Context.config.get("start_date")
         config_normalized = _normalize_date_string(config_raw)
 
         IGNORED_DEFAULTS = {
@@ -400,7 +400,6 @@ class Issues(Stream):
             "2020-01-01T00:00:00Z", "2020-01-01"
         }
 
-        # Ignore default or duplicated Meltano-injected start_date
         if (
             not env_start_date
             or env_normalized in IGNORED_DEFAULTS
@@ -443,7 +442,7 @@ class Issues(Stream):
 
         # ✅ 3️⃣ Fallback to config
         if not last_updated:
-            last_updated = Context.config_start_date()
+            last_updated = Context.config.get("start_date")
             LOGGER.info(f"No valid env or state found. Using start_date from config: {last_updated}")
 
         # STEP 2: Resolve optional end_date (env or config)
@@ -502,7 +501,7 @@ class Issues(Stream):
 
         LOGGER.info(f"Fetching issues with JQL: {jql}")
 
-        # STEP 5: Initialize pagination
+        # STEP 5: Pagination and sync
         page_num = Context.bookmark(page_num_offset) or 0
         pager = Paginator(Context.client, items_key="issues", page_num=page_num)
 
@@ -529,11 +528,12 @@ class Issues(Stream):
             Context.set_bookmark(page_num_offset, pager.next_page_num)
             singer.write_state(Context.state)
 
-        # STEP 6: Finalize bookmarks and save state
+        # STEP 6: Finalize
         Context.set_bookmark(page_num_offset, None)
         Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
         LOGGER.info(f"Finished syncing issues up to: {last_updated.isoformat()}")
+
 
 class Worklogs(Stream):
     def _fetch_ids(self, last_updated):
