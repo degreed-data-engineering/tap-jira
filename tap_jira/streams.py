@@ -364,41 +364,46 @@ class Issues(Stream):
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
 
         # ✅ STEP 1: Resolve start_date (priority: env var > state bookmark > config)
-last_updated = None
+        last_updated = None
 
-# Fetch environment variable first
-env_start_date = (
-    os.getenv("TAP_JIRA_START_DATE")
-    or os.getenv("tapJiraStartDate")
-)
+        # Get raw env value (from shell or Meltano)
+        env_start_date = (
+            os.getenv("TAP_JIRA_START_DATE")
+            or os.getenv("tapJiraStartDate")
+        )
+        LOGGER.info(f"Raw TAP_JIRA_START_DATE env seen as: {env_start_date}")
 
-# 🧠 Ignore Meltano's default injected start_date (e.g., '2021-01-01')
-if env_start_date in ["2021-01-01", "2021-01-01T00:00:00Z", "2020-01-01"]:
-    LOGGER.info(f"Ignoring default TAP_JIRA_START_DATE injected by Meltano: {env_start_date}")
-    env_start_date = None
+        # Get config default from meltano.yml (to detect if env just mirrors it)
+        config_default = str(Context.config_start_date()) if Context.config_start_date() else None
 
-# ✅ 1️⃣ Use environment variable if valid
-if env_start_date:
-    try:
-        last_updated = utils.strptime_to_utc(env_start_date)
-        LOGGER.info(f"Using start_date from environment variable: {env_start_date}")
-    except Exception as e:
-        LOGGER.warning(f"Invalid start_date format in environment variable: {env_start_date}. Error: {e}")
+        # 🧠 Ignore Meltano-injected placeholder start dates
+        IGNORED_DEFAULTS = {"2021-01-01", "2021-01-01T00:00:00Z", "2020-01-01"}
+        if env_start_date in IGNORED_DEFAULTS or env_start_date == config_default:
+            LOGGER.info(f"Ignoring injected TAP_JIRA_START_DATE ({env_start_date}) matching config default.")
+            env_start_date = None
 
-# ✅ 2️⃣ Fallback to state bookmark if no valid env var
-if not last_updated:
-    state_value = Context.bookmark(updated_bookmark)
-    if state_value:
-        try:
-            last_updated = utils.strptime_to_utc(state_value)
-            LOGGER.info(f"Using start_date from state file bookmark: {state_value}")
-        except Exception as e:
-            LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
+        # ✅ 1️⃣ Use environment variable if valid
+        if env_start_date:
+            try:
+                last_updated = utils.strptime_to_utc(env_start_date)
+                LOGGER.info(f"Using start_date from environment variable: {env_start_date}")
+            except Exception as e:
+                LOGGER.warning(f"Invalid start_date format in environment variable: {env_start_date}. Error: {e}")
 
-# ✅ 3️⃣ Fallback to config if neither env nor state found
-if not last_updated:
-    last_updated = Context.config_start_date()
-    LOGGER.info(f"No valid env or state found. Using start_date from meltano.yml config: {last_updated}")
+        # ✅ 2️⃣ Fallback to state bookmark if no valid env var
+        if not last_updated:
+            state_value = Context.bookmark(updated_bookmark)
+            if state_value:
+                try:
+                    last_updated = utils.strptime_to_utc(state_value)
+                    LOGGER.info(f"Using start_date from state file bookmark: {state_value}")
+                except Exception as e:
+                    LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
+
+        # ✅ 3️⃣ Fallback to config if neither env nor state found
+        if not last_updated:
+            last_updated = Context.config_start_date()
+            LOGGER.info(f"No valid env or state found. Using start_date from meltano.yml config: {last_updated}")
 
         # ✅ STEP 2: Resolve optional end_date (env or config)
         env_end_date = (
@@ -411,13 +416,9 @@ if not last_updated:
         if config_end_date:
             try:
                 end_date = utils.strptime_to_utc(config_end_date)
-                LOGGER.info(
-                    f"Using end_date from environment variable/config: {config_end_date}"
-                )
+                LOGGER.info(f"Using end_date from environment variable/config: {config_end_date}")
             except Exception as e:
-                LOGGER.warning(
-                    f"Invalid end_date format: {config_end_date}. Ignoring. Error: {e}"
-                )
+                LOGGER.warning(f"Invalid end_date format: {config_end_date}. Ignoring. Error: {e}")
 
         # ✅ STEP 3: Format dates with timezone
         timezone = Context.retrieve_timezone()
@@ -470,9 +471,7 @@ if not last_updated:
 
             # 🚨 Guard 2: Protect against missing updated field
             if not page[-1]["fields"].get("updated"):
-                LOGGER.warning(
-                    "Last issue in page missing 'updated' field, skipping bookmark update."
-                )
+                LOGGER.warning("Last issue in page missing 'updated' field, skipping bookmark update.")
                 continue
 
             last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
@@ -486,6 +485,7 @@ if not last_updated:
         Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
         LOGGER.info(f"Finished syncing issues up to: {last_updated.isoformat()}")
+
 
 
 
