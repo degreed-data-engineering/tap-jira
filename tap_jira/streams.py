@@ -366,21 +366,36 @@ class Issues(Stream):
         # ✅ STEP 1: Resolve start_date (priority: env var > state bookmark > config)
         last_updated = None
 
-        # Get raw env value (from shell or Meltano)
+        # Raw env var (from shell or Meltano)
         env_start_date = (
             os.getenv("TAP_JIRA_START_DATE")
             or os.getenv("tapJiraStartDate")
         )
         LOGGER.info(f"Raw TAP_JIRA_START_DATE env seen as: {env_start_date}")
 
-        # Get config default from meltano.yml (to detect if env just mirrors it)
-        config_default = str(Context.config_start_date()) if Context.config_start_date() else None
+        # Normalize both env var and config date for accurate comparison
+        def _normalize_date_string(value):
+            if not value:
+                return None
+            try:
+                return utils.strptime_to_utc(value).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception:
+                return str(value).strip()
 
-        # 🧠 Ignore Meltano-injected placeholder start dates
-        IGNORED_DEFAULTS = {"2021-01-01", "2021-01-01T00:00:00Z", "2020-01-01"}
-        if env_start_date in IGNORED_DEFAULTS or env_start_date == config_default:
-            LOGGER.info(f"Ignoring injected TAP_JIRA_START_DATE ({env_start_date}) matching config default.")
+        env_normalized = _normalize_date_string(env_start_date)
+        config_raw = Context.config_start_date()
+        config_normalized = _normalize_date_string(config_raw)
+
+        # 🧠 Ignore Meltano-injected placeholder start dates or config duplicates
+        IGNORED_DEFAULTS = {"2021-01-01T00:00:00Z", "2021-01-01", "2020-01-01T00:00:00Z", "2020-01-01"}
+        if env_normalized in IGNORED_DEFAULTS or env_normalized == config_normalized:
+            LOGGER.info(
+                f"Ignoring injected TAP_JIRA_START_DATE ({env_normalized}) "
+                f"matching meltano config ({config_normalized})."
+            )
             env_start_date = None
+        else:
+            LOGGER.info(f"Keeping env TAP_JIRA_START_DATE since it differs from config: {env_normalized}")
 
         # ✅ 1️⃣ Use environment variable if valid
         if env_start_date:
@@ -404,6 +419,12 @@ class Issues(Stream):
         if not last_updated:
             last_updated = Context.config_start_date()
             LOGGER.info(f"No valid env or state found. Using start_date from meltano.yml config: {last_updated}")
+
+        # ✅ 4️⃣ Use config if no valid env or state found
+        if not last_updated:
+            last_updated = Context.config_start_date()
+            LOGGER.info(f"No valid env or state found. Using start_date from meltano.yml config: {last_updated}")
+
 
         # ✅ STEP 2: Resolve optional end_date (env or config)
         env_end_date = (
