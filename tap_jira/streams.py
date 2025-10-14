@@ -410,9 +410,10 @@ class Issues(Stream):
             LOGGER.info(f"Valid env TAP_JIRA_START_DATE detected: {env_start_date}")
 
         # ✅ 1️⃣ Use environment variable if valid
-        if env_start_date:
+        if env_start_date and env_start_date.strip():
             try:
-                last_updated = utils.strptime_to_utc(env_start_date)
+                last_updated = utils.strptime_to_utc(env_start_date.strip())
+
                 LOGGER.info(f"Using start_date from environment variable: {env_start_date}")
             except Exception as e:
                 LOGGER.warning(
@@ -445,9 +446,10 @@ class Issues(Stream):
         config_end_date = Context.config.get("end_date")
 
         end_date = None
-        if env_end_date:
+        if env_end_date and env_end_date.strip():
             try:
-                end_date = utils.strptime_to_utc(env_end_date)
+                end_date = utils.strptime_to_utc(env_end_date.strip())
+
                 LOGGER.info(f"Using end_date from environment variable: {env_end_date}")
             except Exception as e:
                 LOGGER.warning(
