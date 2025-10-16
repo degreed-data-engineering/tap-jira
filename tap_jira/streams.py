@@ -380,6 +380,7 @@ class Issues(Stream):
                         if bookmarks and "issues" in bookmarks and "updated" in bookmarks["issues"]:
                             state_val = bookmarks["issues"]["updated"]
                             Context.set_bookmark(updated_bookmark, state_val)
+                            Context.state["bookmarks"]["issues"]["updated"] = state_val
                             LOGGER.info(
                                 f"[LOCAL DEBUG] Loaded state bookmark manually from {state_path}: {state_val}"
                             )
