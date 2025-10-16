@@ -190,6 +190,11 @@ class Client():
             self.test_basic_credentials_are_authorized()
 
     def url(self, path):
+        if not path:
+            # Prevent NoneType error and log diagnostic info
+            LOGGER.warning("[DEBUG] Client.url() called with None path — returning base_url only")
+            return self.base_url
+
         if self.is_cloud:
             return self.base_url.format(self.cloud_id, path)
 
@@ -198,6 +203,7 @@ class Client():
         base_url = re.sub('^http[s]?://', '', base_url)
         base_url = 'https://' + base_url
         return base_url.rstrip("/") + "/" + path.lstrip("/")
+
 
     def _headers(self, headers):
         headers = headers.copy()
