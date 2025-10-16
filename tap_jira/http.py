@@ -292,37 +292,40 @@ class Paginator():
         self.items_key = items_key
 
     def pages(self, *args, **kwargs):
-    """Returns a generator which yields pages of data."""
+        """Returns a generator which yields pages of data."""
 
-    params = kwargs.pop("params", {}).copy()
-    while self.next_page_num is not None:
-        params.setdefault("maxResults", 50)
-        params["startAt"] = self.next_page_num
-        if self.order_by:
-            params["orderBy"] = self.order_by
+        params = kwargs.pop("params", {}).copy()
+        while self.next_page_num is not None:
+            # Always ensure defaults
+            params.setdefault("maxResults", 50)
+            params["startAt"] = self.next_page_num
+            if self.order_by:
+                params["orderBy"] = self.order_by
 
-        # ✅ Add this log line:
-        LOGGER.info(f"Fetching Jira page: startAt={params['startAt']}, maxResults={params['maxResults']}")
+            # ✅ Add log line to trace pagination
+            LOGGER.info(f"Fetching Jira page: startAt={params['startAt']}, maxResults={params['maxResults']}")
 
-        response = self.client.request(*args, params=params, **kwargs)
+            response = self.client.request(*args, params=params, **kwargs)
 
-        if self.items_key:
-            page = response.get(self.items_key, [])
-        else:
-            page = response
+            if self.items_key:
+                page = response.get(self.items_key, [])
+            else:
+                page = response
 
-        max_results = response.get("maxResults", params["maxResults"])
-        total = response.get("total", "unknown")
-        LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
+            max_results = response.get("maxResults", params["maxResults"])
+            total = response.get("total", "unknown")
+            LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
 
-        if len(page) < max_results:
-            LOGGER.info("No more pages remaining — stopping pagination.")
-            self.next_page_num = None
-        else:
-            self.next_page_num += max_results
-            LOGGER.info(f"Next page will startAt={self.next_page_num}")
+            if len(page) < max_results:
+                LOGGER.info("No more pages remaining — stopping pagination.")
+                self.next_page_num = None
+            else:
+                self.next_page_num += max_results
+                LOGGER.info(f"Next page will startAt={self.next_page_num}")
 
-        if page:
-            yield page
+            if page:
+                LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
+                yield page
+
 
 
