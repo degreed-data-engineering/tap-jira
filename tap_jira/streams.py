@@ -363,7 +363,7 @@ class Issues(Stream):
         updated_bookmark = [self.tap_stream_id, "updated"]
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
 
-                # -------------------------------------------------------------
+        # -------------------------------------------------------------
         # 🧩 Optional local testing override: manually load state file
         # -------------------------------------------------------------
         if os.getenv("LOCAL_STATE_DEBUG", "false").lower() == "true":
@@ -393,7 +393,7 @@ class Issues(Stream):
                 LOGGER.warning(f"[LOCAL DEBUG] State file {state_path} not found")
 
         # -------------------------------------------------------------
-        # STEP 1: Resolve start_date (priority: env var > state > config)
+        # STEP 1: Resolve start_date (priority: env > state > config)
         # -------------------------------------------------------------
         last_updated = None
         source_used = None
@@ -401,46 +401,16 @@ class Issues(Stream):
         env_start_date = os.getenv("TAP_JIRA_START_DATE") or os.getenv("tapJiraStartDate")
         LOGGER.info(f"Raw TAP_JIRA_START_DATE env seen as: {env_start_date}")
 
-        def _normalize_date_string(value):
-            if not value:
-                return None
-            try:
-                return utils.strptime_to_utc(value).strftime("%Y-%m-%dT%H:%M:%SZ")
-            except Exception:
-                return str(value).strip()
-
-        env_normalized = _normalize_date_string(env_start_date)
-        config_raw = Context.config.get("start_date")
-        config_normalized = _normalize_date_string(config_raw)
-
-        IGNORED_DEFAULTS = {
-            "2021-01-01", "2021-01-01T00:00:00Z",
-            "2020-01-01", "2020-01-01T00:00:00Z"
-        }
-
-        if (
-            not env_start_date
-            or env_normalized in IGNORED_DEFAULTS
-            or env_normalized == config_normalized
-            or not str(env_start_date).strip()
-        ):
-            LOGGER.info(
-                f"Ignoring injected TAP_JIRA_START_DATE ({env_normalized}) "
-                f"matching default/config ({config_normalized})."
-            )
-            env_start_date = None
-
-        # 1️⃣ Environment variable (highest priority)
+        # ✅ Prefer environment variable if explicitly provided
         if env_start_date and env_start_date.strip():
+            LOGGER.info(f"Environment start_date explicitly provided: {env_start_date}")
             try:
                 last_updated = utils.strptime_to_utc(env_start_date.strip())
                 source_used = f"ENV VAR ({env_start_date})"
             except Exception as e:
-                LOGGER.warning(
-                    f"Invalid start_date in env: {env_start_date}. Error: {e}"
-                )
+                LOGGER.warning(f"Invalid env TAP_JIRA_START_DATE: {env_start_date}. Error: {e}")
 
-        # 2️⃣ State file / Meltano managed state
+        # 🔁 Fallback to Meltano state bookmark
         if not last_updated:
             state_value = Context.bookmark(updated_bookmark)
             if state_value:
@@ -450,7 +420,7 @@ class Issues(Stream):
                 except Exception as e:
                     LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
 
-        # 3️⃣ Meltano config fallback
+        # 🧭 Fallback to config start_date
         if not last_updated:
             cfg_date = Context.config.get("start_date")
             if cfg_date:
@@ -460,7 +430,7 @@ class Issues(Stream):
                 except Exception as e:
                     LOGGER.warning(f"Invalid config start_date: {cfg_date}. Error: {e}")
 
-        # 🚨 Final guard
+        # 🚨 Final fallback
         if not last_updated:
             LOGGER.warning("No valid start_date found in env/state/config — falling back to 2021-01-01T00:00:00Z.")
             last_updated = utils.strptime_to_utc("2021-01-01T00:00:00Z")
@@ -552,7 +522,6 @@ class Issues(Stream):
         Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
         LOGGER.info(f"Finished syncing issues up to: {last_updated.isoformat()}")
-
 
 
 
