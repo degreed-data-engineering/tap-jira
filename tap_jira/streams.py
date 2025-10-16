@@ -399,10 +399,15 @@ class Issues(Stream):
         source_used = None
 
         env_start_date = os.getenv("TAP_JIRA_START_DATE") or os.getenv("tapJiraStartDate")
-        LOGGER.info(f"Raw TAP_JIRA_START_DATE env seen as: {env_start_date}")
 
-        # ✅ Prefer environment variable if explicitly provided
-        if env_start_date and env_start_date.strip():
+        # Normalize empty or whitespace-only env vars to None (so we fall back to state)
+        if env_start_date is not None and not env_start_date.strip():
+            env_start_date = None
+
+        LOGGER.info(f"Raw TAP_JIRA_START_DATE env seen as: {repr(env_start_date)}")
+
+        # ✅ Prefer environment variable if explicitly provided and non-empty
+        if env_start_date:
             LOGGER.info(f"Environment start_date explicitly provided: {env_start_date}")
             try:
                 last_updated = utils.strptime_to_utc(env_start_date.strip())
@@ -429,6 +434,7 @@ class Issues(Stream):
                     source_used = f"CONFIG ({cfg_date})"
                 except Exception as e:
                     LOGGER.warning(f"Invalid config start_date: {cfg_date}. Error: {e}")
+
 
         # 🚨 Final fallback
         if not last_updated:
