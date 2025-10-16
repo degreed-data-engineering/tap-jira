@@ -393,7 +393,7 @@ class Issues(Stream):
             else:
                 LOGGER.warning(f"[LOCAL DEBUG] State file {state_path} not found")
 
-        # -------------------------------------------------------------
+                # -------------------------------------------------------------
         # STEP 1: Resolve start_date (priority: env > state > config)
         # -------------------------------------------------------------
         last_updated = None
@@ -413,6 +413,11 @@ class Issues(Stream):
             try:
                 last_updated = utils.strptime_to_utc(env_start_date.strip())
                 source_used = f"ENV VAR ({env_start_date})"
+
+                # 🟩 Add these 2 lines — right after successful parsing
+                LOGGER.info(f"✅ start_date source resolved from ENV VAR ({env_start_date})")
+                LOGGER.info(f"🧭 Final resolved start_date={last_updated}")
+
             except Exception as e:
                 LOGGER.warning(f"Invalid env TAP_JIRA_START_DATE: {env_start_date}. Error: {e}")
 
@@ -423,6 +428,7 @@ class Issues(Stream):
                 try:
                     last_updated = utils.strptime_to_utc(str(state_value).strip())
                     source_used = f"STATE ({state_value})"
+                    LOGGER.info(f"✅ start_date source resolved from STATE ({state_value})")
                 except Exception as e:
                     LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
 
@@ -433,17 +439,21 @@ class Issues(Stream):
                 try:
                     last_updated = utils.strptime_to_utc(str(cfg_date).strip())
                     source_used = f"CONFIG ({cfg_date})"
+                    LOGGER.info(f"✅ start_date source resolved from CONFIG ({cfg_date})")
                 except Exception as e:
                     LOGGER.warning(f"Invalid config start_date: {cfg_date}. Error: {e}")
-
 
         # 🚨 Final fallback
         if not last_updated:
             LOGGER.warning("No valid start_date found in env/state/config — falling back to 2021-01-01T00:00:00Z.")
             last_updated = utils.strptime_to_utc("2021-01-01T00:00:00Z")
             source_used = "DEFAULT FALLBACK (2021-01-01)"
+            LOGGER.info(f"✅ start_date source resolved from DEFAULT FALLBACK (2021-01-01)")
 
+        # ✅ Summary line for consistency
+        LOGGER.info(f"🏁 Final start_date UTC value: {last_updated}")
         LOGGER.info(f"✅ start_date source resolved from {source_used}")
+
 
         # -------------------------------------------------------------
         # STEP 2: Resolve optional end_date (env > config)
