@@ -244,6 +244,17 @@ class Client():
             response = self.send(*args, **kwargs)
             self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
             timer.tags[metrics.Tag.http_status_code] = response.status_code
+
+        # 🧭 DEBUG LOGGING BLOCK START
+        req_path = args[1] if len(args) > 1 else "unknown_path"
+        params = kwargs.get("params", {})
+        LOGGER.warning(
+            f"[DEBUG PAGINATION] stream={tap_stream_id} | "
+            f"path={req_path} | startAt={params.get('startAt')} | "
+            f"maxResults={params.get('maxResults')} | status={response.status_code}"
+        )
+        # 🧭 DEBUG LOGGING BLOCK END
+
         check_status(response)
         return response.json()
 
