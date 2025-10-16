@@ -469,6 +469,11 @@ class Issues(Stream):
             else None
         )
 
+        LOGGER.info(f"🧭 Final resolved start_date_str={start_date_str}, end_date_str={end_date_str}")
+        if not end_date_str:
+            LOGGER.warning("⚠️ end_date_str is None — falling back to open-ended JQL (no upper bound).")
+
+
         # -------------------------------------------------------------
         # STEP 4: Build JQL
         # -------------------------------------------------------------
