@@ -362,6 +362,7 @@ class Issues(Stream):
     def sync(self):
         updated_bookmark = [self.tap_stream_id, "updated"]
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
+        state_value = None  # ✅ Define early — prevents UnboundLocalError in all code paths
 
         # -------------------------------------------------------------
         # 🧩 Optional local testing override: manually load state file
@@ -398,14 +399,24 @@ class Issues(Stream):
         # -------------------------------------------------------------
         last_updated = None
         source_used = None
+        
+        env_start_date_raw = os.getenv("TAP_JIRA_START_DATE") or os.getenv("tapJiraStartDate")
 
-        env_start_date = os.getenv("TAP_JIRA_START_DATE") or os.getenv("tapJiraStartDate")
-
-        # Normalize empty or whitespace-only env vars to None (so we fall back to state)
-        if env_start_date is not None and not env_start_date.strip():
+        # Treat unset or empty-string env vars as "no override"
+        if env_start_date_raw and env_start_date_raw.strip():
+            env_start_date = env_start_date_raw.strip()
+            LOGGER.info(f"✅ start_date explicitly provided via ENV: {env_start_date}")
+        else:
             env_start_date = None
-
-        LOGGER.info(f"Raw TAP_JIRA_START_DATE env seen as: {repr(env_start_date)}")
+            LOGGER.info("🌫️ No TAP_JIRA_START_DATE override detected (empty or missing) — will check state next.")
+        
+        # 🔍 Debug summary of which sources are available
+        LOGGER.info(
+            f"🔍 start_date resolution order → ENV={bool(env_start_date)}, "
+            f"STATE={bool(Context.bookmark(updated_bookmark))}, "
+            f"CONFIG={bool(Context.config.get('start_date'))}"
+        )
+  
 
         # ✅ Prefer environment variable if explicitly provided and non-empty
         if env_start_date:
@@ -423,14 +434,40 @@ class Issues(Stream):
 
         # 🔁 Fallback to Meltano state bookmark
         if not last_updated:
-            state_value = Context.bookmark(updated_bookmark)
-            if state_value:
+            state_value = None  # ✅ Always define upfront to avoid UnboundLocalError
+
+            try:
+                state_value = Context.bookmark(updated_bookmark)
+            except Exception as e:
+                LOGGER.warning(f"⚠️ Error retrieving Context.bookmark: {e}")
+
+            # 🧩 Safety fallback: try reading nested Meltano-style state structure
+            if not state_value and isinstance(Context.state, dict) and "completed" in Context.state:
                 try:
-                    last_updated = utils.strptime_to_utc(str(state_value).strip())
-                    source_used = f"STATE ({state_value})"
-                    LOGGER.info(f"✅ start_date source resolved from STATE ({state_value})")
+                    nested = (
+                        Context.state.get("completed", {})
+                        .get("singer_state", {})
+                        .get("bookmarks", {})
+                        .get("issues", {})
+                        .get("updated")
+                    )
+                    if nested:
+                        state_value = nested
+                        LOGGER.info(f"📂 Loaded nested Meltano state bookmark: {state_value}")
+                    else:
+                        LOGGER.info("📂 No nested Meltano bookmark found under 'completed.singer_state'.")
                 except Exception as e:
-                    LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
+                    LOGGER.warning(f"⚠️ Could not parse nested Meltano state structure: {e}")
+
+        # ✅ Parse the resolved state value if found
+        if state_value:
+            try:
+                last_updated = utils.strptime_to_utc(str(state_value).strip())
+                source_used = f"STATE ({state_value})"
+                LOGGER.info(f"✅ start_date source resolved from STATE ({state_value})")
+            except Exception as e:
+                LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
+
 
         # 🧭 Fallback to config start_date
         if not last_updated:
