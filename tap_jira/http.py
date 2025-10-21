@@ -404,24 +404,22 @@ class IssuesPaginator(Paginator):
 
         while has_more_pages:
             total_pages += 1
+            # Jira Cloud 2025+ requires wrapping body in "searchRequest" and POSTing to /rest/api/3/search/jql
             body = {
-                "jql": body_template.get("jql") or "ORDER BY updated ASC",
-                "validateQuery": True,
-                "startAt": start_at,
-                "maxResults": max_results,
-                # Explicitly remove fields/expand if they were somehow passed in.
-                # The /search/jql endpoint does not support them in the POST body.
-                # They will be fetched per-issue in streams.py.
-                **{k: v for k, v in body_template.items() if k not in ["fields", "expand"]}
+                "searchRequest": {
+                    "jql": body_template.get("jql") or "ORDER BY updated ASC",
+                    "validateQuery": "strict",  # must be string, not boolean
+                    "startAt": start_at,
+                    "maxResults": max_results,
+                    # Remove fields/expand — not allowed in /search/jql POST body
+                    **{k: v for k, v in body_template.items() if k not in ["fields", "expand"]},
+                }
             }
 
-            LOGGER.info(
-                f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql "
-                f"with startAt={start_at}, maxResults={max_results}"
-            )
-            LOGGER.debug(f"[DEBUG BODY - IssuesPaginator] {json.dumps(body, indent=2)}")
+            LOGGER.info(f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql with startAt={start_at}, maxResults={max_results}")
 
-            response = self.client.request("issues", "POST", "/rest/api/3/search", json=body)
+            response = self.client.request("issues", "POST", "/rest/api/3/search/jql", json=body)
+
 
             if not response:
                 LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response for JQL search; stopping pagination.")
