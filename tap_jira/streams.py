@@ -553,7 +553,7 @@ class Issues(Stream):
         page_num = Context.bookmark(page_num_offset) or 0
         pager = IssuesPaginator(Context.client, items_key="issues", page_num=page_num)
 
-        for page in pager.pages(self.tap_stream_id, json=json_body):
+        for page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=json_body):
             if not page:
                 LOGGER.info("No issues returned for JQL; skipping page.")
                 continue
