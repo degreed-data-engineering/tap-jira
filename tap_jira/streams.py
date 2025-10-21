@@ -547,9 +547,11 @@ class Issues(Stream):
         # Jira Cloud now REQUIRES a bounded query and string-based validateQuery
         jql_search_payload = {
             "jql": jql,
-            "validateQuery": "strict",  # ✅ must be string, not boolean
-            "maxResults": DEFAULT_PAGE_SIZE,  # ✅ no need to include startAt (Paginator handles it)
+            "validateQuery": "strict",   # Jira now requires this as a string
+            "startAt": 0,                # Include this so your paginator starts correctly
+            "maxResults": DEFAULT_PAGE_SIZE,  # Typically 50 or 100 depending on your config
         }
+
 
         # -------------------------------------------------------------
         # STEP 5: Pagination and sync using IssuesPaginator (POST-based)
