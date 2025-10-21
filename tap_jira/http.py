@@ -309,6 +309,7 @@ class Client():
                 "client_id": self.oauth_client_id,
                 "client_secret": self.oauth_client_secret,
                 "refresh_token": self.refresh_token}
+        resp = None
         try:
             resp = self.session.post(
                 "https://auth.atlassian.com/oauth/token",
@@ -329,7 +330,7 @@ class Client():
 
     def test_credentials_are_authorized(self):
         # Assume that everyone has issues, so we try and hit that endpoint
-        self.request("issues", "GET", "/rest/api/3/search/jql", # This path is incorrect for GET, but client.request will convert it to POST if json body is provided.
+        self.request("issues", "POST", "/rest/api/3/search/jql", # This path is incorrect for GET, but client.request will convert it to POST if json body is provided.
                      json={"maxResults": 1, "jql": "ORDER BY created DESC"}) # ✅ Use POST with JSON body for /search/jql
 
     def test_basic_credentials_are_authorized(self):
@@ -337,6 +338,49 @@ class Client():
         # Here, we are retrieving serverInfo for the Jira instance by which credentials will also be verified.
         # Assign True value to is_on_prem_instance property for on-prem Jira instance
         self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
+
+class Paginator():
+    def __init__(self, client, page_num=0, order_by=None, items_key="values"):
+        self.client = client
+        self.next_page_num = page_num
+        self.order_by = order_by
+        self.items_key = items_key
+
+    def pages(self, *args, **kwargs):
+        """Returns a generator which yields pages of data."""
+
+        params = kwargs.pop("params", {}).copy()
+        while self.next_page_num is not None:
+            # Always ensure defaults
+            params.setdefault("maxResults", 50)
+            params["startAt"] = self.next_page_num
+            if self.order_by:
+                params["orderBy"] = self.order_by
+
+            # ✅ Add log line to trace pagination
+            LOGGER.info(f"Fetching Jira page (GET): startAt={params['startAt']}, maxResults={params['maxResults']}")
+
+            response = self.client.request(*args, params=params, **kwargs)
+
+            if self.items_key:
+                page = response.get(self.items_key, [])
+            else:
+                page = response
+
+            max_results = response.get("maxResults", params["maxResults"])
+            total = response.get("total", "unknown")
+            LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
+
+            if len(page) < max_results:
+                LOGGER.info("No more pages remaining — stopping pagination.")
+                self.next_page_num = None
+            else:
+                self.next_page_num += max_results
+                LOGGER.info(f"Next page will startAt={self.next_page_num}")
+
+            if page:
+                LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
+                yield page
 
 
 
@@ -351,13 +395,27 @@ class IssuesPaginator(Paginator):
     def pages(self, *args, **kwargs):
         # The 'json' argument here should only contain 'jql', 'startAt', 'maxResults', 'validateQuery'
         # Do NOT include 'fields' or 'expand' here.
-        body_template = kwargs.pop("json", {}).copy()
-        has_more_pages = True
+        # ✅ Sanitize kwargs to avoid legacy paginator pollution
+        # Remove any unexpected prefixed keys that break Jira Cloud 2025+ API
+        for bad_key in list(kwargs.keys()):
+            if bad_key.startswith("jql_") or bad_key.startswith("issues_") or bad_key.startswith("body_"):
+                LOGGER.debug(f"[DEBUG PAGINATION] 🧹 Removing legacy-prefixed key from kwargs: {bad_key}")
+                kwargs.pop(bad_key, None)
 
+        # ✅ Normalize: support either 'body' or 'json' keyword from caller
+        if "body" in kwargs and not kwargs.get("json"):
+            body_template = kwargs["body"].copy()
+        elif "json" in kwargs:
+            body_template = kwargs["json"].copy()
+        else:
+            body_template = {}
+
+        # Safe defaults
         start_at = body_template.get("startAt", 0)
         max_results = body_template.get("maxResults", 50)
-
         total_pages = 0
+        has_more_pages = True
+
 
         while has_more_pages:
             total_pages += 1
@@ -374,20 +432,8 @@ class IssuesPaginator(Paginator):
 
             LOGGER.info(f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql with startAt={start_at}, maxResults={max_results}")
             
-            # ✅ Prefer `body` argument if provided — don't mix it with prefixed kwargs
-            if "body" in kwargs and isinstance(kwargs["body"], dict):
-                request_body = kwargs["body"]
-            else:
-                request_body = body
+            response = self.client.request("issues", "POST", "/rest/api/3/search/jql", json=body)
 
-            LOGGER.info(f"[DEBUG PAGINATION] 🧾 Final JQL payload → {json.dumps(request_body, indent=2)}")
-
-            response = self.client.request(
-                "issues",
-                "POST",
-                "/rest/api/3/search/jql",
-                json=request_body  # Send only the clean payload
-            )
 
 
             if not response:
