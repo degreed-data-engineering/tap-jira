@@ -346,3 +346,83 @@ class Paginator():
 
 
 
+class IssuesPaginator(Paginator):
+    """Custom paginator for Jira Cloud v3 `/search/jql` endpoint.
+
+    Uses POST with JSON body instead of GET query params.
+    Adds verification log for 51st record to confirm correct pagination.
+    """
+
+    def pages(self, *args, **kwargs):
+        params = kwargs.pop("json", {}).copy()
+        has_more_pages = True
+
+        start_at = params.get("startAt", 0)
+        max_results = params.get("maxResults", 50)
+
+        first_page_first_issue_id = None
+        total_pages = 0
+
+        while has_more_pages:
+            total_pages += 1
+            body = {
+                "jql": params.get("jql"),
+                "fields": params.get("fields", "*all"),
+                "expand": params.get("expand", "changelog,transitions"),
+                "validateQuery": params.get("validateQuery", "strict"),
+                "startAt": start_at,
+                "maxResults": max_results,
+            }
+
+            LOGGER.info(
+                f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql "
+                f"with startAt={start_at}, maxResults={max_results}"
+            )
+
+            response = self.client.request("POST", "/rest/api/3/search/jql", json=body)
+
+            if not response:
+                LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response; stopping pagination.")
+                break
+
+            page = response.get(self.items_key) if self.items_key else response
+
+            page_size = len(page or [])
+            LOGGER.info(
+                f"[DEBUG PAGINATION] 📄 Page {total_pages} → startAt={response.get('startAt')} "
+                f"isLast={response.get('isLast')} total={response.get('total', 'unknown')} page_size={page_size}"
+            )
+
+            if not page:
+                LOGGER.info("[DEBUG PAGINATION] ❌ No issues in this page; stopping.")
+                break
+
+            # 🧩 Capture first issue ID from first page for comparison
+            if total_pages == 1 and page_size > 0:
+                first_page_first_issue_id = page[0].get("id")
+                LOGGER.info(f"[DEBUG PAGINATION] 🆕 First issue on page 1: ID={first_page_first_issue_id}")
+
+            # 🧩 Capture first issue ID on page 2 (the 51st issue overall)
+            if total_pages == 2 and page_size > 0:
+                second_page_first_issue_id = page[0].get("id")
+                LOGGER.info(
+                    f"[DEBUG PAGINATION] 🧩 51st record check → First issue on page 2: "
+                    f"ID={second_page_first_issue_id}"
+                )
+                if second_page_first_issue_id == first_page_first_issue_id:
+                    LOGGER.warning(
+                        "⚠️ Pagination check FAILED — 51st record is identical to 1st record! "
+                        "Likely using GET-style pagination or missing startAt handling."
+                    )
+                else:
+                    LOGGER.info("✅ Pagination check PASSED — 51st record is different, pagination working correctly.")
+
+            # Determine if there are more pages
+            has_more_pages = not response.get("isLast", False)
+            start_at = response.get("startAt", start_at) + page_size
+
+            yield page
+
+
+
+

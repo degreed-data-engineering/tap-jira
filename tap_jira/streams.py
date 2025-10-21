@@ -6,7 +6,7 @@ import dateparser
 import os
 
 from singer import metrics, utils, metadata, Transformer
-from .http import Paginator,JiraNotFoundError
+from .http import Paginator,JiraNotFoundError,IssuesPaginator
 from .context import Context
 
 DEFAULT_PAGE_SIZE = 50
@@ -537,27 +537,28 @@ class Issues(Stream):
             else f"updated >= '{start_date_str}' order by updated asc"
         )
 
-        params = {
+        # ✅ Jira Cloud v3: JQL and pagination go inside JSON body, not params
+        json_body = {
             "fields": "*all",
             "expand": "changelog,transitions",
             "validateQuery": "strict",
             "jql": jql,
             "maxResults": DEFAULT_PAGE_SIZE,
+            "startAt": 0,  # explicitly include for POST pagination
         }
 
-        LOGGER.info(f"Fetching issues with JQL: {jql}")
-
         # -------------------------------------------------------------
-        # STEP 5: Pagination and sync
+        # STEP 5: Pagination and sync using IssuesPaginator (POST-based)
         # -------------------------------------------------------------
         page_num = Context.bookmark(page_num_offset) or 0
-        pager = Paginator(Context.client, items_key="issues", page_num=page_num)
+        pager = IssuesPaginator(Context.client, items_key="issues", page_num=page_num)
 
-        for page in pager.pages(self.tap_stream_id, "GET", "/rest/api/3/search/jql", params=params):
+        for page in pager.pages(self.tap_stream_id, json=json_body):
             if not page:
                 LOGGER.info("No issues returned for JQL; skipping page.")
                 continue
-
+        
+            
             sync_sub_streams(page)
 
             for issue in page:
