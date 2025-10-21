@@ -268,6 +268,7 @@ class Client():
             return response.text
 
 
+
     # backoff for Timeout error is already included in "Exception"
     # as it's a parent class of "Timeout" error
     @backoff.on_exception(backoff.expo, Exception, max_tries=3)
