@@ -6,7 +6,9 @@ import dateparser
 import os
 
 from singer import metrics, utils, metadata, Transformer
-from .http import Paginator,JiraNotFoundError,IssuesPaginator
+# Import the new method fetch_issue_details from http.Client
+from .http import Paginator, JiraNotFoundError, IssuesPaginator, Client
+
 from .context import Context
 
 DEFAULT_PAGE_SIZE = 50
@@ -54,28 +56,35 @@ def raise_if_bookmark_cannot_advance(worklogs):
                         .format(worklog_updatedes[0]))
 
 
-def sync_sub_streams(page):
-    for issue in page:
-        comments = issue["fields"].pop("comment")["comments"]
-        if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
-            for comment in comments:
-                comment["issueId"] = issue["id"]
-            ISSUE_COMMENTS.write_page(comments)
-        changelogs = issue.pop("changelog")["histories"]
-        if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
-            changelogs_to_store = []
-            interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
-            for changelog in changelogs:
-                changelog["issueId"] = issue["id"]
-                # just store changelogs of which fields we are interested in
-                if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
-                    changelogs_to_store.append(changelog)
-            CHANGELOGS.write_page(changelogs_to_store)
-        transitions = issue.pop("transitions")
-        if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
-            for transition in transitions:
-                transition["issueId"] = issue["id"]
-            ISSUE_TRANSITIONS.write_page(transitions)
+def sync_sub_streams(detailed_issue):
+    """
+    Syncs sub-streams (comments, changelogs, transitions) from a *single, detailed* issue object.
+    """
+    # Ensure fields exist before trying to pop or access
+    fields = detailed_issue.get("fields", {})
+
+    comments = fields.pop("comment", {}).get("comments")
+    if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
+        for comment in comments:
+            comment["issueId"] = detailed_issue["id"]
+        ISSUE_COMMENTS.write_page(comments)
+
+    changelogs = detailed_issue.pop("changelog", {}).get("histories")
+    if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
+        changelogs_to_store = []
+        interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
+        for changelog in changelogs:
+            changelog["issueId"] = detailed_issue["id"]
+            # just store changelogs of which fields we are interested in
+            if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
+                changelogs_to_store.append(changelog)
+        CHANGELOGS.write_page(changelogs_to_store)
+
+    transitions = detailed_issue.pop("transitions")
+    if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
+        for transition in transitions:
+            transition["issueId"] = detailed_issue["id"]
+        ISSUE_TRANSITIONS.write_page(transitions)
 
 
 def advance_bookmark(worklogs):
@@ -108,6 +117,7 @@ class Stream():
         return "<Stream(" + self.tap_stream_id + ")>"
 
     def sync(self):
+        # Default sync function, should be overridden by specific streams with pagination or custom logic
         page = Context.client.request(self.tap_stream_id, "GET", self.path)
         self.write_page(page)
 
@@ -128,6 +138,10 @@ def update_user_date(page):
     API returns userReleaseDate and userStartDate always in the dd/mm/yyyy format where the month name is in Abbreviation form.
     Dateparser library handles locale value and converts Abbreviation month to number.
     For example, if userReleaseDate is 12/abr/2022 then we are converting it to 2022-04-12.
+    Then, at the end singer-python will transform any DateTime to %Y-%m-%dT00:00:00Z format.
+
+    All the locales are supported except following below locales,
+    Chinese, Italia, Japanese, Korean, Polska, Brasil.
     """
     if page.get('userReleaseDate'):
         page['userReleaseDate'] = transform_user_date(page['userReleaseDate'])
@@ -210,7 +224,7 @@ class BoardsGreenhopper(Stream):
 
                         # modify the issueKeysAddedDuringSprint output into something processable: change key into a value, and add the identifiers
                         issuekeys_added_during_sprint = sprint_report["contents"]["issueKeysAddedDuringSprint"]
-                        if (Context.is_selected(SPRINTREPORTS_ISSUESADDED.tap_stream_id) and len(issuekeys_added_during_sprint)) != 0: 
+                        if (Context.is_selected(SPRINTREPORTS_ISSUESADDED.tap_stream_id) and len(issuekeys_added_during_sprint)) != 0:
                             modify_json = json.dumps(issuekeys_added_during_sprint)
                             modify_json = modify_json.replace('{','[{"boardId":' + board_id + ', "sprintId": ' + sprint_id + ', "issueKeyAddedDuringSprint": ').replace(': true,','}, {"boardId":' + board_id + ', "sprintId": ' + sprint_id + ', "issueKeyAddedDuringSprint":').replace(': true}','}]')
                             modified_dict = json.loads(modify_json)
@@ -277,6 +291,7 @@ class Projects(Stream):
                 "maxResults": DEFAULT_PAGE_SIZE, # maximum number of results to fetch in a page.
                 "startAt": offset #the offset to start at for the next page
             }
+            # For Projects, use the /project/search endpoint which is paginated
             projects = Context.client.request(
                 self.tap_stream_id, "GET", "/rest/api/3/project/search",
                 params=params)
@@ -332,7 +347,7 @@ class ProjectTypes(Stream):
 
 class Users(Stream):
     def sync(self):
-        max_results = 2
+        max_results = 2 # This seems low for users. Consider increasing.
 
         if Context.config.get("groups"):
             groups = Context.config.get("groups").split(",")
@@ -362,7 +377,9 @@ class Issues(Stream):
     def sync(self):
         updated_bookmark = [self.tap_stream_id, "updated"]
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
-        state_value = None  # ✅ Define early — prevents UnboundLocalError in all code paths
+        
+        # Initialize state_value to None here to prevent UnboundLocalError
+        state_value = None 
 
         # -------------------------------------------------------------
         # 🧩 Optional local testing override: manually load state file
@@ -394,7 +411,7 @@ class Issues(Stream):
             else:
                 LOGGER.warning(f"[LOCAL DEBUG] State file {state_path} not found")
 
-                # -------------------------------------------------------------
+        # -------------------------------------------------------------
         # STEP 1: Resolve start_date (priority: env > state > config)
         # -------------------------------------------------------------
         last_updated = None
@@ -402,7 +419,6 @@ class Issues(Stream):
         
         env_start_date_raw = os.getenv("TAP_JIRA_START_DATE") or os.getenv("tapJiraStartDate")
 
-        # Treat unset or empty-string env vars as "no override"
         if env_start_date_raw and env_start_date_raw.strip():
             env_start_date = env_start_date_raw.strip()
             LOGGER.info(f"✅ start_date explicitly provided via ENV: {env_start_date}")
@@ -410,38 +426,28 @@ class Issues(Stream):
             env_start_date = None
             LOGGER.info("🌫️ No TAP_JIRA_START_DATE override detected (empty or missing) — will check state next.")
         
-        # 🔍 Debug summary of which sources are available
         LOGGER.info(
             f"🔍 start_date resolution order → ENV={bool(env_start_date)}, "
             f"STATE={bool(Context.bookmark(updated_bookmark))}, "
             f"CONFIG={bool(Context.config.get('start_date'))}"
         )
   
-
-        # ✅ Prefer environment variable if explicitly provided and non-empty
         if env_start_date:
             LOGGER.info(f"Environment start_date explicitly provided: {env_start_date}")
             try:
                 last_updated = utils.strptime_to_utc(env_start_date.strip())
                 source_used = f"ENV VAR ({env_start_date})"
-
-                # 🟩 Add these 2 lines — right after successful parsing
                 LOGGER.info(f"✅ start_date source resolved from ENV VAR ({env_start_date})")
                 LOGGER.info(f"🧭 Final resolved start_date={last_updated}")
-
             except Exception as e:
                 LOGGER.warning(f"Invalid env TAP_JIRA_START_DATE: {env_start_date}. Error: {e}")
 
-        # 🔁 Fallback to Meltano state bookmark
         if not last_updated:
-            state_value = None  # ✅ Always define upfront to avoid UnboundLocalError
-
             try:
                 state_value = Context.bookmark(updated_bookmark)
             except Exception as e:
                 LOGGER.warning(f"⚠️ Error retrieving Context.bookmark: {e}")
 
-            # 🧩 Safety fallback: try reading nested Meltano-style state structure
             if not state_value and isinstance(Context.state, dict) and "completed" in Context.state:
                 try:
                     nested = (
@@ -459,7 +465,6 @@ class Issues(Stream):
                 except Exception as e:
                     LOGGER.warning(f"⚠️ Could not parse nested Meltano state structure: {e}")
 
-        # ✅ Parse the resolved state value if found
         if state_value:
             try:
                 last_updated = utils.strptime_to_utc(str(state_value).strip())
@@ -469,7 +474,6 @@ class Issues(Stream):
                 LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
 
 
-        # 🧭 Fallback to config start_date
         if not last_updated:
             cfg_date = Context.config.get("start_date")
             if cfg_date:
@@ -480,14 +484,12 @@ class Issues(Stream):
                 except Exception as e:
                     LOGGER.warning(f"Invalid config start_date: {cfg_date}. Error: {e}")
 
-        # 🚨 Final fallback
         if not last_updated:
             LOGGER.warning("No valid start_date found in env/state/config — falling back to 2021-01-01T00:00:00Z.")
             last_updated = utils.strptime_to_utc("2021-01-01T00:00:00Z")
             source_used = "DEFAULT FALLBACK (2021-01-01)"
             LOGGER.info(f"✅ start_date source resolved from DEFAULT FALLBACK (2021-01-01)")
 
-        # ✅ Summary line for consistency
         LOGGER.info(f"🏁 Final start_date UTC value: {last_updated}")
         LOGGER.info(f"✅ start_date source resolved from {source_used}")
 
@@ -529,7 +531,7 @@ class Issues(Stream):
 
 
         # -------------------------------------------------------------
-        # STEP 4: Build JQL
+        # STEP 4: Build JQL for initial search (no fields/expand here)
         # -------------------------------------------------------------
         jql = (
             f"updated >= '{start_date_str}' AND updated < '{end_date_str}' order by updated asc"
@@ -537,14 +539,12 @@ class Issues(Stream):
             else f"updated >= '{start_date_str}' order by updated asc"
         )
 
-        # ✅ Jira Cloud v3: JQL and pagination go inside JSON body, not params
-        json_body = {
-            "fields": "*all",
-            "expand": "changelog,transitions",
-            "validateQuery": "strict",
+        # Payload for the JQL search endpoint - only JQL, pagination, validateQuery
+        jql_search_payload = {
             "jql": jql,
+            "validateQuery": True,
             "maxResults": DEFAULT_PAGE_SIZE,
-            "startAt": 0,  # explicitly include for POST pagination
+            "startAt": 0,
         }
 
         # -------------------------------------------------------------
@@ -553,24 +553,70 @@ class Issues(Stream):
         page_num = Context.bookmark(page_num_offset) or 0
         pager = IssuesPaginator(Context.client, items_key="issues", page_num=page_num)
 
-        for page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=json_body):
-            if not page:
-                LOGGER.info("No issues returned for JQL; skipping page.")
-                continue
+        # We will store the *final* list of fully detailed issues here before writing them.
+        # This allows us to gather all sub-stream data as well.
+        detailed_issues_to_write = []
         
-            
-            sync_sub_streams(page)
+        current_max_updated_timestamp = last_updated # Keep track of the highest 'updated' timestamp seen
 
-            for issue in page:
-                issue["fields"].pop("worklog", None)
-                issue["fields"].pop("operations", None)
-
-            if not page[-1]["fields"].get("updated"):
-                LOGGER.warning("Last issue missing 'updated'; skipping bookmark update.")
+        # Use the IssuesPaginator to get pages of *basic* issue data (ID, key, and minimal fields)
+        for basic_issue_page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=jql_search_payload):
+            if not basic_issue_page:
+                LOGGER.info("No basic issues returned for JQL search; continuing to next page or stopping.")
                 continue
+            
+            LOGGER.info(f"Processing page with {len(basic_issue_page)} basic issue records for detail fetching.")
 
-            last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
-            self.write_page(page)
+            for basic_issue in basic_issue_page:
+                issue_id = basic_issue.get("id") or basic_issue.get("key")
+                if not issue_id:
+                    LOGGER.warning(f"Skipping issue with no ID/key in basic search result: {basic_issue}")
+                    continue
+
+                try:
+                    # STEP 5a: Fetch full details for each issue using the new method
+                    detailed_issue = Context.client.fetch_issue_details(issue_id, self.tap_stream_id)
+                    
+                    if not detailed_issue:
+                        LOGGER.warning(f"No detailed data returned for issue {issue_id}. Skipping.")
+                        continue
+
+                    # STEP 5b: Sync sub-streams (comments, changelogs, transitions) from the detailed issue
+                    sync_sub_streams(detailed_issue)
+
+                    # Remove fields that might cause schema issues or are handled by sub-streams
+                    detailed_issue["fields"].pop("worklog", None)
+                    detailed_issue["fields"].pop("operations", None)
+                    # The sub_streams function pops 'comment', 'changelog', 'transitions'
+                    # if they are selected. Ensure they are removed from the main issue record
+                    # before writing the main issue to avoid writing duplicate data if sub_streams
+                    # are not selected, or if they were not popped due to being empty.
+                    detailed_issue.pop("changelog", None) 
+                    detailed_issue.pop("transitions", None)
+                    if "comment" in detailed_issue.get("fields", {}):
+                        detailed_issue["fields"].pop("comment", None)
+
+                    detailed_issues_to_write.append(detailed_issue)
+
+                    # Update bookmark candidate
+                    if detailed_issue["fields"].get("updated"):
+                        issue_updated_ts = utils.strptime_to_utc(detailed_issue["fields"]["updated"])
+                        if issue_updated_ts > current_max_updated_timestamp:
+                            current_max_updated_timestamp = issue_updated_ts
+
+                except JiraNotFoundError:
+                    LOGGER.warning(f"Detailed issue {issue_id} not found, skipping.")
+                except Exception as e:
+                    LOGGER.error(f"Error fetching or processing detailed issue {issue_id}: {e}")
+                    # Decide if you want to fail the sync or just skip this issue.
+                    # For now, we'll log and continue.
+
+            # After processing all issues on the current page, write the collected detailed issues
+            if detailed_issues_to_write:
+                self.write_page(detailed_issues_to_write)
+                detailed_issues_to_write = [] # Clear for the next page
+            else:
+                LOGGER.info("No detailed issues collected on this page to write.")
 
             Context.set_bookmark(page_num_offset, pager.next_page_num)
             singer.write_state(Context.state)
@@ -578,11 +624,10 @@ class Issues(Stream):
         # -------------------------------------------------------------
         # STEP 6: Finalize bookmarks
         # -------------------------------------------------------------
-        Context.set_bookmark(page_num_offset, None)
-        Context.set_bookmark(updated_bookmark, last_updated)
+        Context.set_bookmark(page_num_offset, None) # Reset page_num for next full sync
+        Context.set_bookmark(updated_bookmark, current_max_updated_timestamp) # Use the max timestamp observed
         singer.write_state(Context.state)
-        LOGGER.info(f"Finished syncing issues up to: {last_updated.isoformat()}")
-
+        LOGGER.info(f"Finished syncing issues up to: {current_max_updated_timestamp.isoformat()}")
 
 
 class Worklogs(Stream):

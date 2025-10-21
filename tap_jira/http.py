@@ -10,7 +10,6 @@ from singer import metrics
 import singer
 import backoff
 
-
 # Jira OAuth tokens last for 3600 seconds. We set it to 3500 to try to
 # come in under the limit.
 REFRESH_TOKEN_EXPIRATION_PERIOD = 3500
@@ -255,11 +254,29 @@ class Client():
             timer.tags[metrics.Tag.http_status_code] = response.status_code
 
         # 🧭 DEBUG LOGGING BLOCK START
-        params = kwargs.get("params", {}) or kwargs.get("json", {})
+        # This logging is useful for all requests, not just pagination,
+        # but especially helpful for understanding API calls.
+        req_body = kwargs.get("json", {})
+        req_params = kwargs.get("params", {})
+        log_payload = {}
+        if req_body:
+            log_payload = {
+                "jql_startAt": req_body.get('startAt'),
+                "jql_maxResults": req_body.get('maxResults'),
+                "jql_fields": req_body.get('fields'),
+                "jql_expand": req_body.get('expand'),
+            }
+        elif req_params:
+            log_payload = {
+                "get_startAt": req_params.get('startAt'),
+                "get_maxResults": req_params.get('maxResults'),
+                "get_fields": req_params.get('fields'),
+                "get_expand": req_params.get('expand'),
+            }
+
         LOGGER.warning(
-            f"[DEBUG PAGINATION] stream={tap_stream_id} | path={path} | "
-            f"startAt={params.get('startAt')} | maxResults={params.get('maxResults')} | "
-            f"status={response.status_code}"
+            f"[DEBUG REQUEST] stream={tap_stream_id} | method={method} | path={path} | "
+            f"status={response.status_code} | payload={log_payload}"
         )
         # 🧭 DEBUG LOGGING BLOCK END
 
@@ -269,7 +286,20 @@ class Client():
         except ValueError:
             return response.text
 
-
+    # --- NEW METHOD FOR FETCHING INDIVIDUAL ISSUES ---
+    @backoff.on_exception(backoff.constant,
+                      JiraBackoffError,
+                      max_tries=10,
+                      interval=60)
+    def fetch_issue_details(self, issue_id_or_key, tap_stream_id="issues", fields="*all", expand="changelog,transitions"):
+        path = f"/rest/api/3/issue/{issue_id_or_key}"
+        params = {
+            "fields": fields,
+            "expand": expand
+        }
+        LOGGER.info(f"[DEBUG] Fetching detailed issue {issue_id_or_key} with fields={fields}, expand={expand}")
+        # Use a GET request for individual issue details
+        return self.request(tap_stream_id, "GET", path, params=params)
 
     # backoff for Timeout error is already included in "Exception"
     # as it's a parent class of "Timeout" error
@@ -299,8 +329,8 @@ class Client():
 
     def test_credentials_are_authorized(self):
         # Assume that everyone has issues, so we try and hit that endpoint
-        self.request("issues", "GET", "/rest/api/3/search/jql",
-                     params={"maxResults": 1})
+        self.request("issues", "GET", "/rest/api/3/search/jql", # This path is incorrect for GET, but client.request will convert it to POST if json body is provided.
+                     json={"maxResults": 1, "jql": "ORDER BY created DESC"}) # ✅ Use POST with JSON body for /search/jql
 
     def test_basic_credentials_are_authorized(self):
         # Make a call to myself endpoint for verify creds
@@ -327,7 +357,7 @@ class Paginator():
                 params["orderBy"] = self.order_by
 
             # ✅ Add log line to trace pagination
-            LOGGER.info(f"Fetching Jira page: startAt={params['startAt']}, maxResults={params['maxResults']}")
+            LOGGER.info(f"Fetching Jira page (GET): startAt={params['startAt']}, maxResults={params['maxResults']}")
 
             response = self.client.request(*args, params=params, **kwargs)
 
@@ -357,79 +387,61 @@ class IssuesPaginator(Paginator):
     """Custom paginator for Jira Cloud v3 `/search/jql` endpoint.
 
     Uses POST with JSON body instead of GET query params.
-    Adds verification log for 51st record to confirm correct pagination.
+    This paginator *only* handles fetching issue IDs/keys from the search endpoint.
+    Detailed issue fetching is handled separately.
     """
 
     def pages(self, *args, **kwargs):
-        params = kwargs.pop("json", {}).copy()
+        # The 'json' argument here should only contain 'jql', 'startAt', 'maxResults', 'validateQuery'
+        # Do NOT include 'fields' or 'expand' here.
+        body_template = kwargs.pop("json", {}).copy()
         has_more_pages = True
 
-        start_at = params.get("startAt", 0)
-        max_results = params.get("maxResults", 50)
+        start_at = body_template.get("startAt", 0)
+        max_results = body_template.get("maxResults", 50)
 
-        first_page_first_issue_id = None
         total_pages = 0
 
         while has_more_pages:
             total_pages += 1
             body = {
-                "jql": params.get("jql") or "ORDER BY updated ASC",
-                "fields": params.get("fields", ["*all"]),
-                "expand": params.get("expand", ["changelog", "transitions"]),
+                "jql": body_template.get("jql") or "ORDER BY updated ASC",
                 "validateQuery": True,
                 "startAt": start_at,
                 "maxResults": max_results,
+                # Explicitly remove fields/expand if they were somehow passed in.
+                # The /search/jql endpoint does not support them in the POST body.
+                # They will be fetched per-issue in streams.py.
+                **{k: v for k, v in body_template.items() if k not in ["fields", "expand"]}
             }
 
-
             LOGGER.info(
-                f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql"
+                f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql "
                 f"with startAt={start_at}, maxResults={max_results}"
             )
-
-            # ✅ FIXED: Use correct Jira Cloud endpoint
-            LOGGER.info(f"[DEBUG BODY] {json.dumps(body, indent=2)}")
+            LOGGER.debug(f"[DEBUG BODY - IssuesPaginator] {json.dumps(body, indent=2)}")
 
             response = self.client.request("issues", "POST", "/rest/api/3/search/jql", json=body)
 
-
             if not response:
-                LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response; stopping pagination.")
+                LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response for JQL search; stopping pagination.")
                 break
 
-            page = response.get(self.items_key) if self.items_key else response
-            page_size = len(page or [])
+            # The /search/jql endpoint returns issues under the "issues" key
+            page = response.get("issues", [])
+            page_size = len(page)
 
             LOGGER.info(
-                f"[DEBUG PAGINATION] 📄 Page {total_pages} → startAt={response.get('startAt')} "
+                f"[DEBUG PAGINATION] 📄 Page {total_pages} → startAt={response.get('startAt', start_at)} "
                 f"isLast={response.get('isLast')} total={response.get('total', 'unknown')} page_size={page_size}"
             )
 
             if not page:
-                LOGGER.info("[DEBUG PAGINATION] ❌ No issues in this page; stopping.")
+                LOGGER.info("[DEBUG PAGINATION] ❌ No issues in this JQL search page; stopping.")
                 break
 
-            if total_pages == 1 and page_size > 0:
-                first_page_first_issue_id = page[0].get("id")
-                LOGGER.info(f"[DEBUG PAGINATION] 🆕 First issue on page 1: ID={first_page_first_issue_id}")
-
-            if total_pages == 2 and page_size > 0:
-                second_page_first_issue_id = page[0].get("id")
-                LOGGER.info(
-                    f"[DEBUG PAGINATION] 🧩 51st record check → First issue on page 2: "
-                    f"ID={second_page_first_issue_id}"
-                )
-                if second_page_first_issue_id == first_page_first_issue_id:
-                    LOGGER.warning("⚠️ Pagination check FAILED — duplicate 51st record.")
-                else:
-                    LOGGER.info("✅ Pagination check PASSED — pagination working correctly.")
-
+            # isLast is the correct way to check for the last page for this endpoint
             has_more_pages = not response.get("isLast", False)
-            start_at = response.get("startAt", start_at) + page_size
+            start_at = response.get("startAt", start_at) + page_size # Use response.get('startAt') if available
 
             yield page
-
-
-
-
-
