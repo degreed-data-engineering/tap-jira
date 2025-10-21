@@ -568,8 +568,10 @@ class Issues(Stream):
             self.tap_stream_id,
             "POST",
             "/rest/api/3/search/jql",
-            json=jql_search_payload  # ✅ must be json, not body
+            body=jql_search_payload  # ✅ pass via 'body' kwarg instead
         ):
+
+
 
 
             if not basic_issue_page:
