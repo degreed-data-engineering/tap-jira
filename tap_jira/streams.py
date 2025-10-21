@@ -564,7 +564,13 @@ class Issues(Stream):
         current_max_updated_timestamp = last_updated # Keep track of the highest 'updated' timestamp seen
 
         # Use the IssuesPaginator to get pages of *basic* issue data (ID, key, and minimal fields)
-        for basic_issue_page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search", json=jql_search_payload):
+        for basic_issue_page in pager.pages(
+            self.tap_stream_id,
+            "POST",
+            "/rest/api/3/search/jql",
+            body=jql_search_payload  # ✅ use "body" instead of "json"
+        ):
+
             if not basic_issue_page:
                 LOGGER.info("No basic issues returned for JQL search; continuing to next page or stopping.")
                 continue
