@@ -8,6 +8,7 @@ import requests
 from singer import metrics
 import singer
 import backoff
+import json
 
 # Jira OAuth tokens last for 3600 seconds. We set it to 3500 to try to
 # come in under the limit.
