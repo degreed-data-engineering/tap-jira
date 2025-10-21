@@ -358,7 +358,7 @@ class IssuesPaginator(Paginator):
     Adds verification log for 51st record to confirm correct pagination.
     """
 
-    def pages(self, tap_stream_id, method, path, **kwargs):
+    def pages(self, *args, **kwargs):
         params = kwargs.pop("json", {}).copy()
         has_more_pages = True
 
@@ -384,15 +384,16 @@ class IssuesPaginator(Paginator):
                 f"with startAt={start_at}, maxResults={max_results}"
             )
 
-            response = self.client.request(tap_stream_id, method, path, json=body)
+            # ✅ FIX: Add tap_stream_id ("issues") before method
+            response = self.client.request("issues", "POST", "/rest/api/3/search/jql", json=body)
 
             if not response:
                 LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response; stopping pagination.")
                 break
 
             page = response.get(self.items_key) if self.items_key else response
-
             page_size = len(page or [])
+
             LOGGER.info(
                 f"[DEBUG PAGINATION] 📄 Page {total_pages} → startAt={response.get('startAt')} "
                 f"isLast={response.get('isLast')} total={response.get('total', 'unknown')} page_size={page_size}"
@@ -402,12 +403,10 @@ class IssuesPaginator(Paginator):
                 LOGGER.info("[DEBUG PAGINATION] ❌ No issues in this page; stopping.")
                 break
 
-            # 🧩 Capture first issue ID from first page for comparison
             if total_pages == 1 and page_size > 0:
                 first_page_first_issue_id = page[0].get("id")
                 LOGGER.info(f"[DEBUG PAGINATION] 🆕 First issue on page 1: ID={first_page_first_issue_id}")
 
-            # 🧩 Capture first issue ID on page 2 (the 51st issue overall)
             if total_pages == 2 and page_size > 0:
                 second_page_first_issue_id = page[0].get("id")
                 LOGGER.info(
@@ -415,18 +414,15 @@ class IssuesPaginator(Paginator):
                     f"ID={second_page_first_issue_id}"
                 )
                 if second_page_first_issue_id == first_page_first_issue_id:
-                    LOGGER.warning(
-                        "⚠️ Pagination check FAILED — 51st record is identical to 1st record! "
-                        "Likely using GET-style pagination or missing startAt handling."
-                    )
+                    LOGGER.warning("⚠️ Pagination check FAILED — duplicate 51st record.")
                 else:
-                    LOGGER.info("✅ Pagination check PASSED — 51st record is different, pagination working correctly.")
+                    LOGGER.info("✅ Pagination check PASSED — pagination working correctly.")
 
-            # Determine if there are more pages
             has_more_pages = not response.get("isLast", False)
             start_at = response.get("startAt", start_at) + page_size
 
             yield page
+
 
 
 
