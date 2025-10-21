@@ -371,13 +371,14 @@ class IssuesPaginator(Paginator):
         while has_more_pages:
             total_pages += 1
             body = {
-                "jql": params.get("jql"),
-                "fields": params.get("fields", "*all"),
-                "expand": params.get("expand", "changelog,transitions"),
-                "validateQuery": params.get("validateQuery", "strict"),
+                "jql": params.get("jql") or "ORDER BY updated ASC",
+                "fields": params.get("fields", ["*all"]),
+                "expand": params.get("expand", ["changelog", "transitions"]),
+                "validateQuery": True,
                 "startAt": start_at,
                 "maxResults": max_results,
             }
+
 
             LOGGER.info(
                 f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search "
@@ -385,6 +386,8 @@ class IssuesPaginator(Paginator):
             )
 
             # ✅ FIXED: Use correct Jira Cloud endpoint
+            LOGGER.info(f"[DEBUG BODY] {json.dumps(body, indent=2)}")
+
             response = self.client.request("issues", "POST", "/rest/api/3/search", json=body)
 
 
