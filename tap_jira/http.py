@@ -421,7 +421,7 @@ class IssuesPaginator(Paginator):
             )
             LOGGER.debug(f"[DEBUG BODY - IssuesPaginator] {json.dumps(body, indent=2)}")
 
-            response = self.client.request("issues", "POST", "/rest/api/3/search/jql", json=body)
+            response = self.client.request("issues", "POST", "/rest/api/3/search", json=body)
 
             if not response:
                 LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response for JQL search; stopping pagination.")
