@@ -242,30 +242,30 @@ class Client():
                       JiraBackoffError,
                       max_tries=10,
                       interval=60)
-def request(self, tap_stream_id, method, path, **kwargs):
-    wait = (self.next_request_at - datetime.now()).total_seconds()
-    if wait > 0:
-        time.sleep(wait)
+    def request(self, tap_stream_id, method, path, **kwargs):
+        wait = (self.next_request_at - datetime.now()).total_seconds()
+        if wait > 0:
+            time.sleep(wait)
 
-    with metrics.http_request_timer(tap_stream_id) as timer:
-        response = self.send(method, path, **kwargs)
-        self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
-        timer.tags[metrics.Tag.http_status_code] = response.status_code
+        with metrics.http_request_timer(tap_stream_id) as timer:
+            response = self.send(method, path, **kwargs)
+            self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
+            timer.tags[metrics.Tag.http_status_code] = response.status_code
 
-    # 🧭 DEBUG LOGGING BLOCK START
-    params = kwargs.get("params", {}) or kwargs.get("json", {})
-    LOGGER.warning(
-        f"[DEBUG PAGINATION] stream={tap_stream_id} | path={path} | "
-        f"startAt={params.get('startAt')} | maxResults={params.get('maxResults')} | "
-        f"status={response.status_code}"
-    )
-    # 🧭 DEBUG LOGGING BLOCK END
+        # 🧭 DEBUG LOGGING BLOCK START
+        params = kwargs.get("params", {}) or kwargs.get("json", {})
+        LOGGER.warning(
+            f"[DEBUG PAGINATION] stream={tap_stream_id} | path={path} | "
+            f"startAt={params.get('startAt')} | maxResults={params.get('maxResults')} | "
+            f"status={response.status_code}"
+        )
+        # 🧭 DEBUG LOGGING BLOCK END
 
-    check_status(response)
-    try:
-        return response.json()
-    except ValueError:
-        return response.text
+        check_status(response)
+        try:
+            return response.json()
+        except ValueError:
+            return response.text
 
 
     # backoff for Timeout error is already included in "Exception"
