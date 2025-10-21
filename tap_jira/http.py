@@ -338,49 +338,6 @@ class Client():
         # Assign True value to is_on_prem_instance property for on-prem Jira instance
         self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
 
-class Paginator():
-    def __init__(self, client, page_num=0, order_by=None, items_key="values"):
-        self.client = client
-        self.next_page_num = page_num
-        self.order_by = order_by
-        self.items_key = items_key
-
-    def pages(self, *args, **kwargs):
-        """Returns a generator which yields pages of data."""
-
-        params = kwargs.pop("params", {}).copy()
-        while self.next_page_num is not None:
-            # Always ensure defaults
-            params.setdefault("maxResults", 50)
-            params["startAt"] = self.next_page_num
-            if self.order_by:
-                params["orderBy"] = self.order_by
-
-            # ✅ Add log line to trace pagination
-            LOGGER.info(f"Fetching Jira page (GET): startAt={params['startAt']}, maxResults={params['maxResults']}")
-
-            response = self.client.request(*args, params=params, **kwargs)
-
-            if self.items_key:
-                page = response.get(self.items_key, [])
-            else:
-                page = response
-
-            max_results = response.get("maxResults", params["maxResults"])
-            total = response.get("total", "unknown")
-            LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
-
-            if len(page) < max_results:
-                LOGGER.info("No more pages remaining — stopping pagination.")
-                self.next_page_num = None
-            else:
-                self.next_page_num += max_results
-                LOGGER.info(f"Next page will startAt={self.next_page_num}")
-
-            if page:
-                LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
-                yield page
-
 
 
 class IssuesPaginator(Paginator):
@@ -416,8 +373,21 @@ class IssuesPaginator(Paginator):
             }
 
             LOGGER.info(f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql with startAt={start_at}, maxResults={max_results}")
+            
+            # ✅ Prefer `body` argument if provided — don't mix it with prefixed kwargs
+            if "body" in kwargs and isinstance(kwargs["body"], dict):
+                request_body = kwargs["body"]
+            else:
+                request_body = body
 
-            response = self.client.request("issues", "POST", "/rest/api/3/search/jql", json=kwargs.get("body", body))
+            LOGGER.info(f"[DEBUG PAGINATION] 🧾 Final JQL payload → {json.dumps(request_body, indent=2)}")
+
+            response = self.client.request(
+                "issues",
+                "POST",
+                "/rest/api/3/search/jql",
+                json=request_body  # Send only the clean payload
+            )
 
 
             if not response:
