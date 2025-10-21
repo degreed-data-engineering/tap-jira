@@ -2,13 +2,14 @@ from datetime import datetime, timedelta
 import time
 import threading
 import re
+import json
 from requests.exceptions import (HTTPError, Timeout)
 from requests.auth import HTTPBasicAuth
 import requests
 from singer import metrics
 import singer
 import backoff
-import json
+
 
 # Jira OAuth tokens last for 3600 seconds. We set it to 3500 to try to
 # come in under the limit.
@@ -382,14 +383,14 @@ class IssuesPaginator(Paginator):
 
 
             LOGGER.info(
-                f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search "
+                f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql"
                 f"with startAt={start_at}, maxResults={max_results}"
             )
 
             # ✅ FIXED: Use correct Jira Cloud endpoint
             LOGGER.info(f"[DEBUG BODY] {json.dumps(body, indent=2)}")
 
-            response = self.client.request("issues", "POST", "/rest/api/3/search", json=body)
+            response = self.client.request("issues", "POST", "/rest/api/3/search/jql", json=body)
 
 
             if not response:
