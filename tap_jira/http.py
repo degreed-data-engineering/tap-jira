@@ -380,12 +380,13 @@ class IssuesPaginator(Paginator):
             }
 
             LOGGER.info(
-                f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql "
+                f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search "
                 f"with startAt={start_at}, maxResults={max_results}"
             )
 
-            # ✅ FIX: Add tap_stream_id ("issues") before method
-            response = self.client.request("issues", "POST", "/rest/api/3/search/jql", json=body)
+            # ✅ FIXED: Use correct Jira Cloud endpoint
+            response = self.client.request("issues", "POST", "/rest/api/3/search", json=body)
+
 
             if not response:
                 LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response; stopping pagination.")
