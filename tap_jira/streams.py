@@ -568,8 +568,9 @@ class Issues(Stream):
             self.tap_stream_id,
             "POST",
             "/rest/api/3/search/jql",
-            body=jql_search_payload  # ✅ use "body" instead of "json"
+            json=jql_search_payload  # ✅ must be json, not body
         ):
+
 
             if not basic_issue_page:
                 LOGGER.info("No basic issues returned for JQL search; continuing to next page or stopping.")

@@ -417,7 +417,8 @@ class IssuesPaginator(Paginator):
 
             LOGGER.info(f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql with startAt={start_at}, maxResults={max_results}")
 
-            response = self.client.request("issues", "POST", "/rest/api/3/search/jql", body)
+            response = self.client.request("issues", "POST", "/rest/api/3/search/jql", json=body)
+
 
 
             if not response:
