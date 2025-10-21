@@ -518,9 +518,11 @@ class Issues(Stream):
         # STEP 3: Format dates with timezone
         # -------------------------------------------------------------
         timezone = Context.retrieve_timezone()
-        start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+
+        # 🕓 Use full seconds precision — Jira prefers ISO-like timestamps
+        start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M:%S")
         end_date_str = (
-            end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+            end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M:%S")
             if end_date
             else None
         )
@@ -529,22 +531,24 @@ class Issues(Stream):
         if not end_date_str:
             LOGGER.warning("⚠️ end_date_str is None — falling back to open-ended JQL (no upper bound).")
 
-
         # -------------------------------------------------------------
         # STEP 4: Build JQL for initial search (no fields/expand here)
         # -------------------------------------------------------------
-        jql = (
-            f"updated >= '{start_date_str}' AND updated < '{end_date_str}' order by updated asc"
-            if end_date_str
-            else f"updated >= '{start_date_str}' order by updated asc"
-        )
+        if not start_date_str:
+            raise ValueError("❌ start_date_str cannot be None — JQL requires a valid starting timestamp.")
 
-        # Payload for the JQL search endpoint - only JQL, pagination, validateQuery
+        if end_date_str:
+            jql = f"updated >= '{start_date_str}' AND updated < '{end_date_str}' ORDER BY updated ASC"
+        else:
+            jql = f"updated >= '{start_date_str}' ORDER BY updated ASC"
+
+        LOGGER.info(f"🧩 Using JQL query: {jql}")
+
+        # Jira Cloud now REQUIRES a bounded query and string-based validateQuery
         jql_search_payload = {
             "jql": jql,
-            "validateQuery": True,
-            "maxResults": DEFAULT_PAGE_SIZE,
-            "startAt": 0,
+            "validateQuery": "strict",  # ✅ must be string, not boolean
+            "maxResults": DEFAULT_PAGE_SIZE,  # ✅ no need to include startAt (Paginator handles it)
         }
 
         # -------------------------------------------------------------
