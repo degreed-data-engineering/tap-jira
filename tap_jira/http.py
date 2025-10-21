@@ -358,7 +358,7 @@ class IssuesPaginator(Paginator):
     Adds verification log for 51st record to confirm correct pagination.
     """
 
-    def pages(self, *args, **kwargs):
+    def pages(self, tap_stream_id, method, path, **kwargs):
         params = kwargs.pop("json", {}).copy()
         has_more_pages = True
 
@@ -384,7 +384,7 @@ class IssuesPaginator(Paginator):
                 f"with startAt={start_at}, maxResults={max_results}"
             )
 
-            response = self.client.request("POST", "/rest/api/3/search/jql", json=body)
+            response = self.client.request(tap_stream_id, method, path, json=body)
 
             if not response:
                 LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response; stopping pagination.")
