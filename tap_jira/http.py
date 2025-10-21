@@ -239,30 +239,34 @@ class Client():
         return self.session.send(request.prepare(), timeout=self.timeout)
 
     @backoff.on_exception(backoff.constant,
-                          JiraBackoffError,
-                          max_tries=10,
-                          interval=60)
-    def request(self, tap_stream_id, *args, **kwargs):
-        wait = (self.next_request_at - datetime.now()).total_seconds()
-        if wait > 0:
-            time.sleep(wait)
-        with metrics.http_request_timer(tap_stream_id) as timer:
-            response = self.send(*args, **kwargs)
-            self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
-            timer.tags[metrics.Tag.http_status_code] = response.status_code
+                      JiraBackoffError,
+                      max_tries=10,
+                      interval=60)
+def request(self, tap_stream_id, method, path, **kwargs):
+    wait = (self.next_request_at - datetime.now()).total_seconds()
+    if wait > 0:
+        time.sleep(wait)
 
-        # 🧭 DEBUG LOGGING BLOCK START
-        req_path = args[1] if len(args) > 1 else "unknown_path"
-        params = kwargs.get("params", {})
-        LOGGER.warning(
-            f"[DEBUG PAGINATION] stream={tap_stream_id} | "
-            f"path={req_path} | startAt={params.get('startAt')} | "
-            f"maxResults={params.get('maxResults')} | status={response.status_code}"
-        )
-        # 🧭 DEBUG LOGGING BLOCK END
+    with metrics.http_request_timer(tap_stream_id) as timer:
+        response = self.send(method, path, **kwargs)
+        self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
+        timer.tags[metrics.Tag.http_status_code] = response.status_code
 
-        check_status(response)
+    # 🧭 DEBUG LOGGING BLOCK START
+    params = kwargs.get("params", {}) or kwargs.get("json", {})
+    LOGGER.warning(
+        f"[DEBUG PAGINATION] stream={tap_stream_id} | path={path} | "
+        f"startAt={params.get('startAt')} | maxResults={params.get('maxResults')} | "
+        f"status={response.status_code}"
+    )
+    # 🧭 DEBUG LOGGING BLOCK END
+
+    check_status(response)
+    try:
         return response.json()
+    except ValueError:
+        return response.text
+
 
     # backoff for Timeout error is already included in "Exception"
     # as it's a parent class of "Timeout" error
