@@ -570,7 +570,7 @@ class Issues(Stream):
             self.tap_stream_id,
             "POST",
             "/rest/api/3/search/jql",
-            body=jql_search_payload  # ✅ use 'body', not 'json'
+            json=jql_search_payload  # ✅ use 'body', not 'json'
         ):
 
 
