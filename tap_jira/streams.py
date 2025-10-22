@@ -375,7 +375,55 @@ class Users(Stream):
 class Issues(Stream):
     def sync(self):
         updated_bookmark_key = [self.tap_stream_id, "updated"]
-        last_updated = Context.update_start_date_bookmark(updated_bookmark_key)
+        last_updated = None
+        source_used = None
+        
+        # 1. Check for a non-empty Environment Variable
+        env_start_date = os.getenv("TAP_JIRA_START_DATE")
+        if env_start_date and env_start_date.strip(): # <-- Crucial check for non-empty string
+            LOGGER.info(f"Found non-empty TAP_JIRA_START_DATE: '{env_start_date}'")
+            try:
+                last_updated = utils.strptime_to_utc(env_start_date)
+                source_used = f"ENVIRONMENT VARIABLE ({env_start_date})"
+            except Exception as e:
+                LOGGER.warning(f"Could not parse TAP_JIRA_START_DATE. Error: {e}. Proceeding to check state.")
+        else:
+            LOGGER.info("TAP_JIRA_START_DATE is missing or empty. Checking state file next.")
+
+        # 2. Check for State File (if ENV was not used)
+        if not last_updated:
+            state_value = Context.bookmark(updated_bookmark_key)
+            if state_value:
+                LOGGER.info(f"Found bookmark in state file: '{state_value}'")
+                try:
+                    last_updated = utils.strptime_to_utc(state_value)
+                    source_used = f"STATE FILE ({state_value})"
+                except Exception as e:
+                    LOGGER.warning(f"Could not parse state bookmark. Error: {e}. Proceeding to check config.")
+            else:
+                LOGGER.info("No bookmark found in state file. Checking config next.")
+
+        # 3. Check for Meltano Config (if ENV and State were not used)
+        if not last_updated:
+            config_date = Context.config.get("start_date")
+            if config_date:
+                LOGGER.info(f"Found start_date in config: '{config_date}'")
+                try:
+                    last_updated = utils.strptime_to_utc(config_date)
+                    source_used = f"MELTANO.YML CONFIG ({config_date})"
+                except Exception as e:
+                    LOGGER.warning(f"Could not parse start_date from config. Error: {e}. Using default.")
+            else:
+                LOGGER.info("No start_date found in config. Using default fallback.")
+
+        # 4. Fallback to a default if nothing is found
+        if not last_updated:
+            fallback_date = "2021-01-01T00:00:00Z"
+            LOGGER.warning(f"No valid start_date found. Using default fallback: {fallback_date}")
+            last_updated = utils.strptime_to_utc(fallback_date)
+            source_used = "DEFAULT FALLBACK"
+        
+        LOGGER.info(f"🏁 Final start_date resolved from: {source_used} -> {last_updated.isoformat()}")
         
         end_date = None
         env_end_date = os.getenv("TAP_JIRA_END_DATE")
