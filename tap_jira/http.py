@@ -256,6 +256,14 @@ class Client():
                     kwargs["json"] = kwargs.pop("body")
 
             response = self.send(method, path, **kwargs)
+            if "json" in kwargs:
+                try:
+                    LOGGER.warning(f"[DEBUG CLIENT.REQUEST] 📦 Received JSON body:\n{json.dumps(kwargs['json'], indent=2)}")
+                except Exception:
+                    LOGGER.warning(f"[DEBUG CLIENT.REQUEST] 📦 Received JSON body (non-serializable): {kwargs['json']}")
+            else:
+                LOGGER.warning("[DEBUG CLIENT.REQUEST] ⚠️ No JSON body received by Client.request()")
+
             self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
             timer.tags[metrics.Tag.http_status_code] = response.status_code
 
