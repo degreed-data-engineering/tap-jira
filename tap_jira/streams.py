@@ -7,7 +7,7 @@ import os
 
 from singer import metrics, utils, metadata, Transformer
 # Import the new method fetch_issue_details from http.Client
-from .http import NextPageTokenPaginator
+from .http import Paginator, JiraNotFoundError, NextPageTokenPaginator, Client
 from .context import Context
 
 DEFAULT_PAGE_SIZE = 50
