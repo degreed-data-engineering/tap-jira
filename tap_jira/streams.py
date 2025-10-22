@@ -574,7 +574,7 @@ class Issues(Stream):
             if issues_to_write:
                 self.write_page(issues_to_write)
             
-            Context.set_bookmark(updated_bookmark_key, current_max_updated_timestamp)
+            Context.set_bookmark(updated_bookmark, current_max_updated_timestamp)
             singer.write_state(Context.state)
         
         LOGGER.info(f"Finished syncing issues up to: {current_max_updated_timestamp.isoformat()}")
