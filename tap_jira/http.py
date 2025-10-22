@@ -434,15 +434,14 @@ class IssuesPaginator(Paginator):
             # Jira Cloud 2025+ requires wrapping body in "searchRequest" and POSTing to /rest/api/3/search/jql
             # Jira Cloud 2025+ (confirmed via cURL) requires POST /rest/api/3/search/jql with flat JSON body
             body = {
-                "searchRequest": {
-                    "jql": body_template.get("jql") or "ORDER BY updated ASC",
-                    "validateQuery": "strict",
-                    "startAt": start_at,
-                    "maxResults": max_results,
-                    # Explicitly remove fields/expand — not supported in POST body
-                    **{k: v for k, v in body_template.items() if k not in ["fields", "expand"]}
-                }
+                "jql": body_template.get("jql") or "ORDER BY updated ASC",
+                "validateQuery": "strict",
+                "startAt": start_at,
+                "maxResults": max_results,
+                # Remove unsupported fields
+                **{k: v for k, v in body_template.items() if k not in ["fields", "expand"]}
             }
+            LOGGER.warning(f"[DEBUG FINAL PAYLOAD] {json.dumps(body, indent=2)}")
 
             LOGGER.info(f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql with startAt={start_at}, maxResults={max_results}")
 
