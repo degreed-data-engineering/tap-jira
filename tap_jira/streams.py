@@ -375,17 +375,102 @@ class Users(Stream):
 class Issues(Stream):
     def sync(self):
         updated_bookmark_key = [self.tap_stream_id, "updated"]
-        last_updated = Context.update_start_date_bookmark(updated_bookmark_key)
+        # ======================================================================
+        # --- BLOCK 1: START_DATE RESOLUTION LOGIC (ENV > STATE > CONFIG) ---
+        # ======================================================================
+
+        last_updated = None
+        source_used = None
+        state_value = None # Initialize
+        
+        env_start_date_raw = os.getenv("TAP_JIRA_START_DATE") or os.getenv("tapJiraStartDate")
+
+        if env_start_date_raw and env_start_date_raw.strip():
+            env_start_date = env_start_date_raw.strip()
+        else:
+            env_start_date = None
+        
+        if env_start_date:
+            try:
+                last_updated = utils.strptime_to_utc(env_start_date.strip())
+                source_used = f"ENV VAR ({env_start_date})"
+            except Exception as e:
+                LOGGER.warning(f"Invalid env TAP_JIRA_START_DATE: {env_start_date}. Error: {e}")
+
+        if not last_updated:
+            state_value = Context.bookmark(updated_bookmark_key)
+            if state_value:
+                try:
+                    last_updated = utils.strptime_to_utc(str(state_value).strip())
+                    source_used = f"STATE ({state_value})"
+                except Exception as e:
+                    LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
+
+        if not last_updated:
+            cfg_date = Context.config.get("start_date")
+            if cfg_date:
+                try:
+                    last_updated = utils.strptime_to_utc(str(cfg_date).strip())
+                    source_used = f"CONFIG ({cfg_date})"
+                except Exception as e:
+                    LOGGER.warning(f"Invalid config start_date: {cfg_date}. Error: {e}")
+
+        if not last_updated:
+            fallback_date = "2021-01-01T00:00:00Z"
+            LOGGER.warning(f"No valid start_date found. Using default fallback: {fallback_date}")
+            last_updated = utils.strptime_to_utc(fallback_date)
+            source_used = "DEFAULT FALLBACK"
+
+        LOGGER.info(f"🏁 Final start_date resolved from: {source_used} -> {last_updated.isoformat()}")
+
+        # ======================================================================
+        # --- BLOCK 2: YOUR END_DATE RESOLUTION LOGIC (ENV > CONFIG) ---
+        # ======================================================================
+
+        end_date = None
+        env_end_date = os.getenv("TAP_JIRA_END_DATE") or os.getenv("tapJiraEndDate")
+        cfg_end_date = Context.config.get("end_date")
+
+        if env_end_date and env_end_date.strip():
+            try:
+                end_date = utils.strptime_to_utc(env_end_date.strip())
+                LOGGER.info(f"🏁 Using end_date from environment: {env_end_date}")
+            except Exception as e:
+                LOGGER.warning(f"Invalid TAP_JIRA_END_DATE: {env_end_date}. Error: {e}")
+        elif cfg_end_date and str(cfg_end_date).strip():
+            try:
+                end_date = utils.strptime_to_utc(str(cfg_end_date).strip())
+                LOGGER.info(f"🏁 Using end_date from config: {cfg_end_date}")
+            except Exception as e:
+                LOGGER.warning(f"Invalid config end_date: {cfg_end_date}. Error: {e}")
+
+        # ======================================================================
+        # --- BLOCK 3: THE NEXTPAGETOKEN SYNC LOGIC (WITH END_DATE) ---
+        # ======================================================================
         
         timezone = Context.client.timezone
         start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+        
+        # Format the end_date if it exists
+        end_date_str = (
+            end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+            if end_date
+            else None
+        )
 
-        jql = f"updated >= '{start_date_str}' ORDER BY updated ASC"
+        LOGGER.info(f"🧭 JQL date range: start='{start_date_str}', end='{end_date_str}'")
+
+        # Build the JQL query with the optional end_date
+        if end_date_str:
+            jql = f"updated >= '{start_date_str}' AND updated < '{end_date_str}' ORDER BY updated ASC"
+        else:
+            jql = f"updated >= '{start_date_str}' ORDER BY updated ASC"
+            LOGGER.warning("⚠️ No end_date provided. JQL query will be open-ended.")
+
         LOGGER.info(f"🧩 Using JQL query: {jql}")
 
-        # Use the new paginator and the new endpoint
         pager = NextPageTokenPaginator(Context.client, items_key="issues", page_size=DEFAULT_PAGE_SIZE)
-        path = "/rest/api/3/search/jql" # <-- THE NEW, CORRECT ENDPOINT
+        path = "/rest/api/3/search/jql"
 
         params = {
             "jql": jql,
