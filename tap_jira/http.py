@@ -351,125 +351,46 @@ class Client():
         # Assign True value to is_on_prem_instance property for on-prem Jira instance
         self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
 
-class Paginator():
-    def __init__(self, client, page_num=0, order_by=None, items_key="values"):
-        self.client = client
-        self.next_page_num = page_num
-        self.order_by = order_by
-        self.items_key = items_key
-
-    def pages(self, *args, **kwargs):
-        """Returns a generator which yields pages of data."""
-
-        params = kwargs.pop("params", {}).copy()
-        while self.next_page_num is not None:
-            # Always ensure defaults
-            params.setdefault("maxResults", 50)
-            params["startAt"] = self.next_page_num
-            if self.order_by:
-                params["orderBy"] = self.order_by
-
-            # ✅ Add log line to trace pagination
-            LOGGER.info(f"Fetching Jira page (GET): startAt={params['startAt']}, maxResults={params['maxResults']}")
-
-            response = self.client.request(*args, params=params, **kwargs)
-
-            if self.items_key:
-                page = response.get(self.items_key, [])
-            else:
-                page = response
-
-            max_results = response.get("maxResults", params["maxResults"])
-            total = response.get("total", "unknown")
-            LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
-
-            if len(page) < max_results:
-                LOGGER.info("No more pages remaining — stopping pagination.")
-                self.next_page_num = None
-            else:
-                self.next_page_num += max_results
-                LOGGER.info(f"Next page will startAt={self.next_page_num}")
-
-            if page:
-                LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
-                yield page
-
-
-
-class IssuesPaginator(Paginator):
-    """Custom paginator for Jira Cloud v3 `/search/jql` endpoint.
-
-    Uses POST with JSON body instead of GET query params.
-    This paginator *only* handles fetching issue IDs/keys from the search endpoint.
-    Detailed issue fetching is handled separately.
+class NextPageTokenPaginator:
     """
+    Paginator for Jira endpoints that use GET and `nextPageToken`.
+    """
+    def __init__(self, client, items_key="issues", page_size=100):
+        self.client = client
+        self.items_key = items_key
+        self.page_size = page_size
 
-    def pages(self, *args, **kwargs):
-        # The 'json' argument here should only contain 'jql', 'startAt', 'maxResults', 'validateQuery'
-        # Do NOT include 'fields' or 'expand' here.
-        # ✅ Sanitize kwargs to avoid legacy paginator pollution
-        # Remove any unexpected prefixed keys that break Jira Cloud 2025+ API
-        for bad_key in list(kwargs.keys()):
-            if bad_key.startswith("jql_") or bad_key.startswith("issues_") or bad_key.startswith("body_"):
-                LOGGER.debug(f"[DEBUG PAGINATION] 🧹 Removing legacy-prefixed key from kwargs: {bad_key}")
-                kwargs.pop(bad_key, None)
+    def pages(self, stream_name, path, params=None):
+        if params is None:
+            params = {}
+        
+        params["maxResults"] = self.page_size
+        next_page_token = None
 
-        # ✅ Normalize: support either 'body' or 'json' keyword from caller
-        if "body" in kwargs and not kwargs.get("json"):
-            body_template = kwargs["body"].copy()
-        elif "json" in kwargs:
-            body_template = kwargs["json"].copy()
-        else:
-            body_template = {}
-
-        # Safe defaults
-        start_at = body_template.get("startAt", 0)
-        max_results = body_template.get("maxResults", 50)
-        total_pages = 0
-        has_more_pages = True
-
-
-        while has_more_pages:
-            total_pages += 1
-            # Jira Cloud 2025+ requires wrapping body in "searchRequest" and POSTing to /rest/api/3/search/jql
-            # Jira Cloud 2025+ (confirmed via cURL) requires POST /rest/api/3/search/jql with flat JSON body
-            body = {
-                "jql": body_template.get("jql") or "ORDER BY updated ASC",
-                "validateQuery": "strict",
-                "startAt": start_at,
-                "maxResults": max_results,
-                # Remove unsupported fields
-                **{k: v for k, v in body_template.items() if k not in ["fields", "expand"]}
-            }
-            LOGGER.warning(f"[DEBUG FINAL PAYLOAD] {json.dumps(body, indent=2)}")
-
-            LOGGER.info(f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql with startAt={start_at}, maxResults={max_results}")
-
-            response = self.client.request(
-                "issues", "POST", "/rest/api/3/search/jql", json=body
-            )
-            LOGGER.info(f"[DEBUG PAGINATION] 🧾 Final payload JSON → {json.dumps(body, indent=2)}")
-
-
-            if not response:
-                LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response for JQL search; stopping pagination.")
+        while True:
+            LOGGER.info(f"Fetching page for '{stream_name}'...")
+            
+            if next_page_token:
+                params["nextPageToken"] = next_page_token
+            
+            try:
+                response = self.client.request(stream_name, "GET", path, params=params)
+            except JiraNotFoundError:
+                LOGGER.warning(f"Endpoint not found for '{stream_name}' at path '{path}'. Skipping.")
                 break
 
-            # The /search/jql endpoint returns issues under the "issues" key
-            page = response.get("issues", [])
-            page_size = len(page)
-
-            LOGGER.info(
-                f"[DEBUG PAGINATION] 📄 Page {total_pages} → startAt={response.get('startAt', start_at)} "
-                f"isLast={response.get('isLast')} total={response.get('total', 'unknown')} page_size={page_size}"
-            )
-
-            if not page:
-                LOGGER.info("[DEBUG PAGINATION] ❌ No issues in this JQL search page; stopping.")
+            page_items = response.get(self.items_key, [])
+            
+            if not page_items:
+                LOGGER.info(f"No more items returned for '{stream_name}'. Ending pagination.")
                 break
+            
+            yield page_items
 
-            # isLast is the correct way to check for the last page for this endpoint
-            has_more_pages = not response.get("isLast", False)
-            start_at = response.get("startAt", start_at) + page_size # Use response.get('startAt') if available
-
-            yield page
+            # Get the token for the next page
+            next_page_token = response.get("nextPageToken")
+            
+            # If no token, we are done
+            if not next_page_token:
+                LOGGER.info(f"Finished paginating for '{stream_name}'. No nextPageToken found.")
+                break
