@@ -374,177 +374,18 @@ class Users(Stream):
 
 class Issues(Stream):
     def sync(self):
-        updated_bookmark = [self.tap_stream_id, "updated"]
-        page_num_offset = [self.tap_stream_id, "offset", "page_num"]
+        updated_bookmark_key = [self.tap_stream_id, "updated"]
+        last_updated = Context.update_start_date_bookmark(updated_bookmark_key)
         
-        # Initialize state_value to None here to prevent UnboundLocalError
-        state_value = None 
+        timezone = Context.client.timezone
+        start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
 
-        # -------------------------------------------------------------
-        # 🧩 Optional local testing override: manually load state file
-        # -------------------------------------------------------------
-        if os.getenv("LOCAL_STATE_DEBUG", "false").lower() == "true":
-            state_path = os.getenv("TAP_JIRA_STATE_PATH", "jira.json")
-            if os.path.exists(state_path):
-                try:
-                    with open(state_path, "r") as f:
-                        state_data = json.load(f)
-                        bookmarks = (
-                            state_data.get("completed", {})
-                            .get("singer_state", {})
-                            .get("bookmarks", {})
-                        )
-                        if bookmarks and "issues" in bookmarks and "updated" in bookmarks["issues"]:
-                            state_val = bookmarks["issues"]["updated"]
-                            Context.set_bookmark(updated_bookmark, state_val)
-                            Context.state["bookmarks"]["issues"]["updated"] = state_val
-                            LOGGER.info(
-                                f"[LOCAL DEBUG] Loaded state bookmark manually from {state_path}: {state_val}"
-                            )
-                        else:
-                            LOGGER.warning(
-                                f"[LOCAL DEBUG] No valid 'issues.updated' bookmark in {state_path}"
-                            )
-                except Exception as e:
-                    LOGGER.warning(f"[LOCAL DEBUG] Could not load {state_path}: {e}")
-            else:
-                LOGGER.warning(f"[LOCAL DEBUG] State file {state_path} not found")
-
-        # -------------------------------------------------------------
-        # STEP 1: Resolve start_date (priority: env > state > config)
-        # -------------------------------------------------------------
-        last_updated = None
-        source_used = None
-        
-        env_start_date_raw = os.getenv("TAP_JIRA_START_DATE") or os.getenv("tapJiraStartDate")
-
-        if env_start_date_raw and env_start_date_raw.strip():
-            env_start_date = env_start_date_raw.strip()
-            LOGGER.info(f"✅ start_date explicitly provided via ENV: {env_start_date}")
-        else:
-            env_start_date = None
-            LOGGER.info("🌫️ No TAP_JIRA_START_DATE override detected (empty or missing) — will check state next.")
-        
-        LOGGER.info(
-            f"🔍 start_date resolution order → ENV={bool(env_start_date)}, "
-            f"STATE={bool(Context.bookmark(updated_bookmark))}, "
-            f"CONFIG={bool(Context.config.get('start_date'))}"
-        )
-  
-        if env_start_date:
-            LOGGER.info(f"Environment start_date explicitly provided: {env_start_date}")
-            try:
-                last_updated = utils.strptime_to_utc(env_start_date.strip())
-                source_used = f"ENV VAR ({env_start_date})"
-                LOGGER.info(f"✅ start_date source resolved from ENV VAR ({env_start_date})")
-                LOGGER.info(f"🧭 Final resolved start_date={last_updated}")
-            except Exception as e:
-                LOGGER.warning(f"Invalid env TAP_JIRA_START_DATE: {env_start_date}. Error: {e}")
-
-        if not last_updated:
-            try:
-                state_value = Context.bookmark(updated_bookmark)
-            except Exception as e:
-                LOGGER.warning(f"⚠️ Error retrieving Context.bookmark: {e}")
-
-            if not state_value and isinstance(Context.state, dict) and "completed" in Context.state:
-                try:
-                    nested = (
-                        Context.state.get("completed", {})
-                        .get("singer_state", {})
-                        .get("bookmarks", {})
-                        .get("issues", {})
-                        .get("updated")
-                    )
-                    if nested:
-                        state_value = nested
-                        LOGGER.info(f"📂 Loaded nested Meltano state bookmark: {state_value}")
-                    else:
-                        LOGGER.info("📂 No nested Meltano bookmark found under 'completed.singer_state'.")
-                except Exception as e:
-                    LOGGER.warning(f"⚠️ Could not parse nested Meltano state structure: {e}")
-
-        if state_value:
-            try:
-                last_updated = utils.strptime_to_utc(str(state_value).strip())
-                source_used = f"STATE ({state_value})"
-                LOGGER.info(f"✅ start_date source resolved from STATE ({state_value})")
-            except Exception as e:
-                LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
-
-
-        if not last_updated:
-            cfg_date = Context.config.get("start_date")
-            if cfg_date:
-                try:
-                    last_updated = utils.strptime_to_utc(str(cfg_date).strip())
-                    source_used = f"CONFIG ({cfg_date})"
-                    LOGGER.info(f"✅ start_date source resolved from CONFIG ({cfg_date})")
-                except Exception as e:
-                    LOGGER.warning(f"Invalid config start_date: {cfg_date}. Error: {e}")
-
-        if not last_updated:
-            LOGGER.warning("No valid start_date found in env/state/config — falling back to 2021-01-01T00:00:00Z.")
-            last_updated = utils.strptime_to_utc("2021-01-01T00:00:00Z")
-            source_used = "DEFAULT FALLBACK (2021-01-01)"
-            LOGGER.info(f"✅ start_date source resolved from DEFAULT FALLBACK (2021-01-01)")
-
-        LOGGER.info(f"🏁 Final start_date UTC value: {last_updated}")
-        LOGGER.info(f"✅ start_date source resolved from {source_used}")
-
-
-        # -------------------------------------------------------------
-        # STEP 2: Resolve optional end_date (env > config)
-        # -------------------------------------------------------------
-        end_date = None
-        env_end_date = os.getenv("TAP_JIRA_END_DATE") or os.getenv("tapJiraEndDate")
-        cfg_end_date = Context.config.get("end_date")
-
-        if env_end_date and env_end_date.strip():
-            try:
-                end_date = utils.strptime_to_utc(env_end_date.strip())
-                LOGGER.info(f"Using end_date from environment: {env_end_date}")
-            except Exception as e:
-                LOGGER.warning(f"Invalid TAP_JIRA_END_DATE: {env_end_date}. Error: {e}")
-        elif cfg_end_date and str(cfg_end_date).strip():
-            try:
-                end_date = utils.strptime_to_utc(str(cfg_end_date).strip())
-                LOGGER.info(f"Using end_date from config: {cfg_end_date}")
-            except Exception as e:
-                LOGGER.warning(f"Invalid config end_date: {cfg_end_date}. Error: {e}")
-
-        # -------------------------------------------------------------
-        # STEP 3: Format dates with timezone
-        # -------------------------------------------------------------
-        timezone = Context.retrieve_timezone()
-
-        # 🕓 Use full seconds precision — Jira prefers ISO-like timestamps
-        start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M:%S")
-        end_date_str = (
-            end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M:%S")
-            if end_date
-            else None
-        )
-
-        LOGGER.info(f"🧭 Final resolved start_date_str={start_date_str}, end_date_str={end_date_str}")
-        if not end_date_str:
-            LOGGER.warning("⚠️ end_date_str is None — falling back to open-ended JQL (no upper bound).")
-
-        # -------------------------------------------------------------
-        # STEP 4: Build JQL for initial search (no fields/expand here)
-        # -------------------------------------------------------------
-        if not start_date_str:
-            raise ValueError("❌ start_date_str cannot be None — JQL requires a valid starting timestamp.")
-
-        if end_date_str:
-            jql = f"updated >= '{start_date_str}' AND updated < '{end_date_str}' ORDER BY updated ASC"
-        else:
-            jql = f"updated >= '{start_date_str}' ORDER BY updated ASC"
-
+        jql = f"updated >= '{start_date_str}' ORDER BY updated ASC"
         LOGGER.info(f"🧩 Using JQL query: {jql}")
 
+        # Use the new paginator and the new endpoint
         pager = NextPageTokenPaginator(Context.client, items_key="issues", page_size=DEFAULT_PAGE_SIZE)
-        path = "/rest/api/3/search/jql"
+        path = "/rest/api/3/search/jql" # <-- THE NEW, CORRECT ENDPOINT
 
         params = {
             "jql": jql,
@@ -574,7 +415,7 @@ class Issues(Stream):
             if issues_to_write:
                 self.write_page(issues_to_write)
             
-            Context.set_bookmark(updated_bookmark, current_max_updated_timestamp)
+            Context.set_bookmark(updated_bookmark_key, current_max_updated_timestamp)
             singer.write_state(Context.state)
         
         LOGGER.info(f"Finished syncing issues up to: {current_max_updated_timestamp.isoformat()}")
