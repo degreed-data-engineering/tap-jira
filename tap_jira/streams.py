@@ -380,28 +380,43 @@ class Issues(Stream):
         
         # 1. Check for a non-empty Environment Variable
         env_start_date = os.getenv("TAP_JIRA_START_DATE")
-        if env_start_date and env_start_date.strip(): # <-- Crucial check for non-empty string
+        if env_start_date and env_start_date.strip():
             LOGGER.info(f"Found non-empty TAP_JIRA_START_DATE: '{env_start_date}'")
             try:
                 last_updated = utils.strptime_to_utc(env_start_date)
                 source_used = f"ENVIRONMENT VARIABLE ({env_start_date})"
             except Exception as e:
-                LOGGER.warning(f"Could not parse TAP_JIRA_START_DATE. Error: {e}. Proceeding to check state.")
+                LOGGER.warning(f"Could not parse TAP_JIRA_START_DATE. Error: {e}")
         else:
-            LOGGER.info("TAP_JIRA_START_DATE is missing or empty. Checking state file next.")
+            LOGGER.info("TAP_JIRA_START_DATE is missing or empty. Checking for state.")
 
-        # 2. Check for State File (if ENV was not used)
+        # 2. Check for State (if ENV was not used)
         if not last_updated:
-            state_value = Context.bookmark(updated_bookmark_key)
+            state_value = None
+            # This robust block checks all the places the bookmark could be
+            if isinstance(Context.state, dict):
+                # Standard Meltano state location
+                state_value = Context.state.get("bookmarks", {}).get("issues", {}).get("updated")
+                
+                # Check for nested Meltano state structure as a fallback
+                if not state_value:
+                    nested_val = (Context.state.get("completed", {})
+                                  .get("singer_state", {})
+                                  .get("bookmarks", {})
+                                  .get("issues", {})
+                                  .get("updated"))
+                    if nested_val:
+                        state_value = nested_val
+            
             if state_value:
                 LOGGER.info(f"Found bookmark in state file: '{state_value}'")
                 try:
                     last_updated = utils.strptime_to_utc(state_value)
                     source_used = f"STATE FILE ({state_value})"
                 except Exception as e:
-                    LOGGER.warning(f"Could not parse state bookmark. Error: {e}. Proceeding to check config.")
+                    LOGGER.warning(f"Could not parse state bookmark. Error: {e}.")
             else:
-                LOGGER.info("No bookmark found in state file. Checking config next.")
+                LOGGER.info("No bookmark found in state. Checking config.")
 
         # 3. Check for Meltano Config (if ENV and State were not used)
         if not last_updated:
@@ -412,9 +427,9 @@ class Issues(Stream):
                     last_updated = utils.strptime_to_utc(config_date)
                     source_used = f"MELTANO.YML CONFIG ({config_date})"
                 except Exception as e:
-                    LOGGER.warning(f"Could not parse start_date from config. Error: {e}. Using default.")
+                    LOGGER.warning(f"Could not parse start_date from config. Error: {e}.")
             else:
-                LOGGER.info("No start_date found in config. Using default fallback.")
+                LOGGER.info("No start_date found in config.")
 
         # 4. Fallback to a default if nothing is found
         if not last_updated:
