@@ -249,42 +249,46 @@ class Client():
             time.sleep(wait)
 
         with metrics.http_request_timer(tap_stream_id) as timer:
+            # ✅ For POST with JSON body, use the body as-is (no prefixing!)
+            if method == "POST" and ("json" in kwargs or "body" in kwargs):
+                # Normalize for backward compatibility
+                if "body" in kwargs and "json" not in kwargs:
+                    kwargs["json"] = kwargs.pop("body")
+
             response = self.send(method, path, **kwargs)
             self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
             timer.tags[metrics.Tag.http_status_code] = response.status_code
 
-        # 🧭 DEBUG LOGGING BLOCK START
-        # This logging is useful for all requests, not just pagination,
-        # but especially helpful for understanding API calls.
-        req_body = kwargs.get("json", {})
-        req_params = kwargs.get("params", {})
-        log_payload = {}
+        # 🧭 Clean Debug Logging — No Prefixes
+        req_body = kwargs.get("json")
+        req_params = kwargs.get("params")
+
         if req_body:
+            # Log the actual JQL payload being sent
             log_payload = {
-                "jql_startAt": req_body.get('startAt'),
-                "jql_maxResults": req_body.get('maxResults'),
-                "jql_fields": req_body.get('fields'),
-                "jql_expand": req_body.get('expand'),
+                k: v for k, v in req_body.items()
+                if k in ("jql", "startAt", "maxResults", "validateQuery", "fields", "expand")
             }
         elif req_params:
+            # Log GET query params (unchanged)
             log_payload = {
-                "get_startAt": req_params.get('startAt'),
-                "get_maxResults": req_params.get('maxResults'),
-                "get_fields": req_params.get('fields'),
-                "get_expand": req_params.get('expand'),
+                k: v for k, v in req_params.items()
+                if k in ("startAt", "maxResults", "fields", "expand")
             }
+        else:
+            log_payload = {}
 
         LOGGER.warning(
             f"[DEBUG REQUEST] stream={tap_stream_id} | method={method} | path={path} | "
             f"status={response.status_code} | payload={log_payload}"
         )
-        # 🧭 DEBUG LOGGING BLOCK END
 
         check_status(response)
         try:
             return response.json()
         except ValueError:
             return response.text
+
 
     # --- NEW METHOD FOR FETCHING INDIVIDUAL ISSUES ---
     @backoff.on_exception(backoff.constant,
