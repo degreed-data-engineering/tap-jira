@@ -189,6 +189,7 @@ class Client():
             self.base_url = config.get("base_url")
             self.auth = HTTPBasicAuth(config.get("username"), config.get("password"))
             self.test_basic_credentials_are_authorized()
+        self.timezone = self.retrieve_timezone()    
     
     def retrieve_timezone(self):
         try:
