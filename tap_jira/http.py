@@ -189,6 +189,23 @@ class Client():
             self.base_url = config.get("base_url")
             self.auth = HTTPBasicAuth(config.get("username"), config.get("password"))
             self.test_basic_credentials_are_authorized()
+    
+    def retrieve_timezone(self):
+        try:
+            # Use the existing self.request method to get server info
+            server_info = self.request("users", "GET", "/rest/api/3/serverInfo")
+            tz_name = server_info.get("serverTimeZone", "UTC")
+            
+            # This also correctly sets the is_on_prem_instance flag
+            deployment_type = server_info.get('deploymentType')
+            if deployment_type:
+                self.is_on_prem_instance = (deployment_type == "Server")
+
+            LOGGER.info(f"Successfully retrieved server timezone: {tz_name}")
+            return tz_name
+        except Exception as e:
+            LOGGER.warning(f"Could not retrieve server timezone, defaulting to UTC. Error: {e}")
+            return "UTC"        
 
     def url(self, path):
         if not path:
