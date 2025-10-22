@@ -374,7 +374,7 @@ class Users(Stream):
 
 class Issues(Stream):
     def sync(self):
-        updated_bookmark_key = [self.tap_stream_id, "updated"]
+        updated_bookmark = [self.tap_stream_id, "updated"]
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
         
         # Initialize state_value to None here to prevent UnboundLocalError
