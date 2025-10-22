@@ -377,10 +377,29 @@ class Issues(Stream):
         updated_bookmark_key = [self.tap_stream_id, "updated"]
         last_updated = Context.update_start_date_bookmark(updated_bookmark_key)
         
+        end_date = None
+        env_end_date = os.getenv("TAP_JIRA_END_DATE")
+        if env_end_date:
+            try:
+                end_date = utils.strptime_to_utc(env_end_date)
+                LOGGER.info(f"Using end_date from environment: {env_end_date}")
+            except Exception as e:
+                LOGGER.warning(f"Could not parse TAP_JIRA_END_DATE: {e}")
+
         timezone = Context.client.timezone
         start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
 
-        jql = f"updated >= '{start_date_str}' ORDER BY updated ASC"
+        end_date_str = (
+            end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+            if end_date
+            else None
+        )
+
+        if end_date_str:
+            jql = f"updated >= '{start_date_str}' AND updated < '{end_date_str}' ORDER BY updated ASC"
+        else:
+            jql = f"updated >= '{start_date_str}' ORDER BY updated ASC"
+            
         LOGGER.info(f"🧩 Using JQL query: {jql}")
 
         # Use the new paginator and the new endpoint
@@ -418,7 +437,15 @@ class Issues(Stream):
             Context.set_bookmark(updated_bookmark_key, current_max_updated_timestamp)
             singer.write_state(Context.state)
         
-        LOGGER.info(f"Finished syncing issues up to: {current_max_updated_timestamp.isoformat()}")
+        # If the run was bounded by an end_date, the bookmark should be set to that date.
+        final_bookmark_value = current_max_updated_timestamp
+        if end_date and end_date > current_max_updated_timestamp:
+            final_bookmark_value = end_date
+            LOGGER.info(f"Run was bounded by an end_date. Advancing bookmark to {end_date.isoformat()}")
+
+        Context.set_bookmark(updated_bookmark_key, final_bookmark_value)
+        singer.write_state(Context.state)
+        LOGGER.info(f"Final state bookmark for 'issues' is set to: {final_bookmark_value.isoformat()}")
 
 
 class Worklogs(Stream):
