@@ -441,6 +441,7 @@ class IssuesPaginator(Paginator):
             response = self.client.request(
                 "issues", "POST", "/rest/api/3/search/jql", json=body
             )
+            LOGGER.info(f"[DEBUG PAGINATION] 🧾 Final payload JSON → {json.dumps(body, indent=2)}")
 
 
             if not response:
