@@ -165,46 +165,66 @@ class Client():
         self.user_agent = config.get("user_agent")
         self.login_timer = None
         self.timeout = get_request_timeout(config)
-
-        # Assign False for cloud Jira instance
         self.is_on_prem_instance = False
 
         if self.is_cloud:
+            # This logic remains for anyone using OAuth, which is not you.
             LOGGER.info("Using OAuth based API authentication")
-            self.auth = None
+            self.auth_method = 'oauth'
             self.base_url = 'https://api.atlassian.com/ex/jira/{}{}'
             self.cloud_id = config.get('cloud_id')
             self.access_token = config.get('access_token')
             self.refresh_token = config.get('refresh_token')
             self.oauth_client_id = config.get('oauth_client_id')
             self.oauth_client_secret = config.get('oauth_client_secret')
-
-            # Only appears to be needed once for any 6 hour period. If
-            # running the tap for more than 6 hours is needed this will
-            # likely need to be more complicated.
             self.refresh_credentials()
             self.test_credentials_are_authorized()
+        
+        # --- MODIFIED ---
+        # This is the new logic for your pre-encoded Basic Auth key.
+        elif 'api_key' in config:
+            LOGGER.info("Using Pre-encoded Basic Auth API Key")
+            self.auth_method = 'api_key'
+            self.base_url = config.get("base_url")
+            self.api_key = config.get("api_key")
+            if not self.api_key:
+                raise Exception("Configuration is missing required key: 'api_key'")
+            self.test_basic_credentials_are_authorized()
+        # --- END MODIFIED ---
+            
         else:
+            # This is the original legacy Basic Auth logic.
             LOGGER.info("Using Basic Auth API authentication")
+            self.auth_method = 'basic'
             self.base_url = config.get("base_url")
             self.auth = HTTPBasicAuth(config.get("username"), config.get("password"))
             self.test_basic_credentials_are_authorized()
+            
+        self.timezone = self.retrieve_timezone()    
+    
+    def retrieve_timezone(self):
+        try:
+            server_info = self.request("users", "GET", "/rest/api/3/serverInfo")
+            tz_name = server_info.get("serverTimeZone", "UTC")
+            deployment_type = server_info.get('deploymentType')
+            if deployment_type:
+                self.is_on_prem_instance = (deployment_type == "Server")
+            LOGGER.info(f"Successfully retrieved server timezone: {tz_name}")
+            return tz_name
+        except Exception as e:
+            LOGGER.warning(f"Could not retrieve server timezone, defaulting to UTC. Error: {e}")
+            return "UTC"        
 
     def url(self, path):
         if not path:
-            # Prevent NoneType error and log diagnostic info
             LOGGER.warning("[DEBUG] Client.url() called with None path — returning base_url only")
             return self.base_url
-
         if self.is_cloud:
             return self.base_url.format(self.cloud_id, path)
-
-        # defend against if the base_url does or does not provide https://
         base_url = self.base_url
         base_url = re.sub('^http[s]?://', '', base_url)
         base_url = 'https://' + base_url
         return base_url.rstrip("/") + "/" + path.lstrip("/")
-
 
     def _headers(self, headers):
         headers = headers.copy()
@@ -212,31 +232,35 @@ class Client():
             headers["User-Agent"] = self.user_agent
 
         if self.is_cloud:
-            # Add OAuth Headers
             headers['Accept'] = 'application/json'
             headers['Authorization'] = 'Bearer {}'.format(self.access_token)
+            
+        # --- MODIFIED ---
+        # If we are using the api_key method, set the header directly.
+        elif self.auth_method == 'api_key':
+            headers['Accept'] = 'application/json'
+            headers['Authorization'] = f"Basic {self.api_key}"
+        # --- END MODIFIED ---
 
         return headers
 
-    @backoff.on_exception(backoff.expo,
-                          (requests.exceptions.ConnectionError, HTTPError, Timeout),
-                          jitter=None,
-                          max_tries=6,
-                          giveup=lambda e: not should_retry_httperror(e))
+    @backoff.on_exception(backoff.expo, (requests.exceptions.ConnectionError, HTTPError, Timeout), max_tries=6)
     def send(self, method, path, headers={}, **kwargs):
-        if self.is_cloud:
-            # OAuth Path
-            request = requests.Request(method,
-                                       self.url(path),
-                                       headers=self._headers(headers),
-                                       **kwargs)
-        else:
-            # Basic Auth Path
-            request = requests.Request(method,
-                                       self.url(path),
-                                       auth=self.auth,
-                                       headers=self._headers(headers),
-                                       **kwargs)
+        # --- MODIFIED ---
+        # This logic is simplified. We build the full headers first, then decide
+        # whether to pass the `auth` object for legacy basic auth.
+        full_headers = self._headers(headers)
+        
+        # The `auth` object is only needed for the original username/password method.
+        # For OAuth and our new api_key method, the Authorization header is already set.
+        auth_object = self.auth if self.auth_method == 'basic' else None
+
+        request = requests.Request(method,
+                                   self.url(path),
+                                   auth=auth_object,
+                                   headers=full_headers,
+                                   **kwargs)
+        # --- END MODIFIED ---
         return self.session.send(request.prepare(), timeout=self.timeout)
 
     @backoff.on_exception(backoff.constant,
@@ -247,50 +271,10 @@ class Client():
         wait = (self.next_request_at - datetime.now()).total_seconds()
         if wait > 0:
             time.sleep(wait)
-
         with metrics.http_request_timer(tap_stream_id) as timer:
-            # ✅ For POST with JSON body, use the body as-is (no prefixing!)
-            if method == "POST" and ("json" in kwargs or "body" in kwargs):
-                # Normalize for backward compatibility
-                if "body" in kwargs and "json" not in kwargs:
-                    kwargs["json"] = kwargs.pop("body")
-
             response = self.send(method, path, **kwargs)
-            if "json" in kwargs:
-                try:
-                    LOGGER.warning(f"[DEBUG CLIENT.REQUEST] 📦 Received JSON body:\n{json.dumps(kwargs['json'], indent=2)}")
-                except Exception:
-                    LOGGER.warning(f"[DEBUG CLIENT.REQUEST] 📦 Received JSON body (non-serializable): {kwargs['json']}")
-            else:
-                LOGGER.warning("[DEBUG CLIENT.REQUEST] ⚠️ No JSON body received by Client.request()")
-
             self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
             timer.tags[metrics.Tag.http_status_code] = response.status_code
-
-        # 🧭 Clean Debug Logging — No Prefixes
-        req_body = kwargs.get("json")
-        req_params = kwargs.get("params")
-
-        if req_body:
-            # Log the actual JQL payload being sent
-            log_payload = {
-                k: v for k, v in req_body.items()
-                if k in ("jql", "startAt", "maxResults", "validateQuery", "fields", "expand")
-            }
-        elif req_params:
-            # Log GET query params (unchanged)
-            log_payload = {
-                k: v for k, v in req_params.items()
-                if k in ("startAt", "maxResults", "fields", "expand")
-            }
-        else:
-            log_payload = {}
-
-        LOGGER.warning(
-            f"[DEBUG REQUEST] stream={tap_stream_id} | method={method} | path={path} | "
-            f"status={response.status_code} | payload={log_payload}"
-        )
-
         check_status(response)
         try:
             return response.json()
@@ -393,83 +377,46 @@ class Paginator():
             if page:
                 LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
                 yield page
-
-
-
-class IssuesPaginator(Paginator):
-    """Custom paginator for Jira Cloud v3 `/search/jql` endpoint.
-
-    Uses POST with JSON body instead of GET query params.
-    This paginator *only* handles fetching issue IDs/keys from the search endpoint.
-    Detailed issue fetching is handled separately.
+class NextPageTokenPaginator:
     """
+    Paginator for Jira endpoints that use GET and `nextPageToken`.
+    """
+    def __init__(self, client, items_key="issues", page_size=100):
+        self.client = client
+        self.items_key = items_key
+        self.page_size = page_size
 
-    def pages(self, *args, **kwargs):
-        # The 'json' argument here should only contain 'jql', 'startAt', 'maxResults', 'validateQuery'
-        # Do NOT include 'fields' or 'expand' here.
-        # ✅ Sanitize kwargs to avoid legacy paginator pollution
-        # Remove any unexpected prefixed keys that break Jira Cloud 2025+ API
-        for bad_key in list(kwargs.keys()):
-            if bad_key.startswith("jql_") or bad_key.startswith("issues_") or bad_key.startswith("body_"):
-                LOGGER.debug(f"[DEBUG PAGINATION] 🧹 Removing legacy-prefixed key from kwargs: {bad_key}")
-                kwargs.pop(bad_key, None)
+    def pages(self, stream_name, path, params=None):
+        if params is None:
+            params = {}
+        
+        params["maxResults"] = self.page_size
+        next_page_token = None
 
-        # ✅ Normalize: support either 'body' or 'json' keyword from caller
-        if "body" in kwargs and not kwargs.get("json"):
-            body_template = kwargs["body"].copy()
-        elif "json" in kwargs:
-            body_template = kwargs["json"].copy()
-        else:
-            body_template = {}
-
-        # Safe defaults
-        start_at = body_template.get("startAt", 0)
-        max_results = body_template.get("maxResults", 50)
-        total_pages = 0
-        has_more_pages = True
-
-
-        while has_more_pages:
-            total_pages += 1
-            # Jira Cloud 2025+ requires wrapping body in "searchRequest" and POSTing to /rest/api/3/search/jql
-            # Jira Cloud 2025+ (confirmed via cURL) requires POST /rest/api/3/search/jql with flat JSON body
-            body = {
-                "jql": body_template.get("jql") or "ORDER BY updated ASC",
-                "validateQuery": "strict",
-                "startAt": start_at,
-                "maxResults": max_results,
-                # Remove unsupported fields
-                **{k: v for k, v in body_template.items() if k not in ["fields", "expand"]}
-            }
-            LOGGER.warning(f"[DEBUG FINAL PAYLOAD] {json.dumps(body, indent=2)}")
-
-            LOGGER.info(f"[DEBUG PAGINATION] 🔄 Sending POST /rest/api/3/search/jql with startAt={start_at}, maxResults={max_results}")
-
-            response = self.client.request(
-                "issues", "POST", "/rest/api/3/search/jql", json=body
-            )
-            LOGGER.info(f"[DEBUG PAGINATION] 🧾 Final payload JSON → {json.dumps(body, indent=2)}")
-
-
-            if not response:
-                LOGGER.warning("[DEBUG PAGINATION] ⚠️ Empty response for JQL search; stopping pagination.")
+        while True:
+            LOGGER.info(f"Fetching page for '{stream_name}'...")
+            
+            if next_page_token:
+                params["nextPageToken"] = next_page_token
+            
+            try:
+                response = self.client.request(stream_name, "GET", path, params=params)
+            except JiraNotFoundError:
+                LOGGER.warning(f"Endpoint not found for '{stream_name}' at path '{path}'. Skipping.")
                 break
 
-            # The /search/jql endpoint returns issues under the "issues" key
-            page = response.get("issues", [])
-            page_size = len(page)
-
-            LOGGER.info(
-                f"[DEBUG PAGINATION] 📄 Page {total_pages} → startAt={response.get('startAt', start_at)} "
-                f"isLast={response.get('isLast')} total={response.get('total', 'unknown')} page_size={page_size}"
-            )
-
-            if not page:
-                LOGGER.info("[DEBUG PAGINATION] ❌ No issues in this JQL search page; stopping.")
+            page_items = response.get(self.items_key, [])
+            
+            if not page_items:
+                LOGGER.info(f"No more items returned for '{stream_name}'. Ending pagination.")
                 break
+            
+            yield page_items
 
-            # isLast is the correct way to check for the last page for this endpoint
-            has_more_pages = not response.get("isLast", False)
-            start_at = response.get("startAt", start_at) + page_size # Use response.get('startAt') if available
-
-            yield page
+            # Get the token for the next page
+            next_page_token = response.get("nextPageToken")
+            
+            # If no token, we are done
+            if not next_page_token:
+                LOGGER.info(f"Finished paginating for '{stream_name}'. No nextPageToken found.")
+                break
