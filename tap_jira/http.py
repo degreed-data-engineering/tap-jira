@@ -2,7 +2,6 @@ from datetime import datetime, timedelta
 import time
 import threading
 import re
-import json
 from requests.exceptions import (HTTPError, Timeout)
 from requests.auth import HTTPBasicAuth
 import requests
@@ -199,32 +198,22 @@ class Client():
             self.base_url = config.get("base_url")
             self.auth = HTTPBasicAuth(config.get("username"), config.get("password"))
             self.test_basic_credentials_are_authorized()
-            
-        self.timezone = self.retrieve_timezone()    
-    
-    def retrieve_timezone(self):
-        try:
-            server_info = self.request("users", "GET", "/rest/api/3/serverInfo")
-            tz_name = server_info.get("serverTimeZone", "UTC")
-            deployment_type = server_info.get('deploymentType')
-            if deployment_type:
-                self.is_on_prem_instance = (deployment_type == "Server")
-            LOGGER.info(f"Successfully retrieved server timezone: {tz_name}")
-            return tz_name
-        except Exception as e:
-            LOGGER.warning(f"Could not retrieve server timezone, defaulting to UTC. Error: {e}")
-            return "UTC"        
 
     def url(self, path):
         if not path:
+            # Prevent NoneType error and log diagnostic info
             LOGGER.warning("[DEBUG] Client.url() called with None path — returning base_url only")
             return self.base_url
+
         if self.is_cloud:
             return self.base_url.format(self.cloud_id, path)
+
+        # defend against if the base_url does or does not provide https://
         base_url = self.base_url
         base_url = re.sub('^http[s]?://', '', base_url)
         base_url = 'https://' + base_url
         return base_url.rstrip("/") + "/" + path.lstrip("/")
+
 
     def _headers(self, headers):
         headers = headers.copy()
@@ -244,7 +233,11 @@ class Client():
 
         return headers
 
-    @backoff.on_exception(backoff.expo, (requests.exceptions.ConnectionError, HTTPError, Timeout), max_tries=6)
+    @backoff.on_exception(backoff.expo,
+                          (requests.exceptions.ConnectionError, HTTPError, Timeout),
+                          jitter=None,
+                          max_tries=6,
+                          giveup=lambda e: not should_retry_httperror(e))
     def send(self, method, path, headers={}, **kwargs):
         # --- MODIFIED ---
         # This logic is simplified. We build the full headers first, then decide
@@ -264,9 +257,9 @@ class Client():
         return self.session.send(request.prepare(), timeout=self.timeout)
 
     @backoff.on_exception(backoff.constant,
-                      JiraBackoffError,
-                      max_tries=10,
-                      interval=60)
+                          JiraBackoffError,
+                          max_tries=10,
+                          interval=60)
     def request(self, tap_stream_id, method, path, **kwargs):
         wait = (self.next_request_at - datetime.now()).total_seconds()
         if wait > 0:
@@ -281,8 +274,7 @@ class Client():
         except ValueError:
             return response.text
 
-
-    # --- NEW METHOD FOR FETCHING INDIVIDUAL ISSUES ---
+        # --- NEW METHOD FOR FETCHING INDIVIDUAL ISSUES ---
     @backoff.on_exception(backoff.constant,
                       JiraBackoffError,
                       max_tries=10,
@@ -354,7 +346,7 @@ class Paginator():
                 params["orderBy"] = self.order_by
 
             # ✅ Add log line to trace pagination
-            LOGGER.info(f"Fetching Jira page (GET): startAt={params['startAt']}, maxResults={params['maxResults']}")
+            LOGGER.info(f"Fetching Jira page: startAt={params['startAt']}, maxResults={params['maxResults']}")
 
             response = self.client.request(*args, params=params, **kwargs)
 
@@ -377,46 +369,5 @@ class Paginator():
             if page:
                 LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
                 yield page
-class NextPageTokenPaginator:
-    """
-    Paginator for Jira endpoints that use GET and `nextPageToken`.
-    """
-    def __init__(self, client, items_key="issues", page_size=100):
-        self.client = client
-        self.items_key = items_key
-        self.page_size = page_size
 
-    def pages(self, stream_name, path, params=None):
-        if params is None:
-            params = {}
-        
-        params["maxResults"] = self.page_size
-        next_page_token = None
 
-        while True:
-            LOGGER.info(f"Fetching page for '{stream_name}'...")
-            
-            if next_page_token:
-                params["nextPageToken"] = next_page_token
-            
-            try:
-                response = self.client.request(stream_name, "GET", path, params=params)
-            except JiraNotFoundError:
-                LOGGER.warning(f"Endpoint not found for '{stream_name}' at path '{path}'. Skipping.")
-                break
-
-            page_items = response.get(self.items_key, [])
-            
-            if not page_items:
-                LOGGER.info(f"No more items returned for '{stream_name}'. Ending pagination.")
-                break
-            
-            yield page_items
-
-            # Get the token for the next page
-            next_page_token = response.get("nextPageToken")
-            
-            # If no token, we are done
-            if not next_page_token:
-                LOGGER.info(f"Finished paginating for '{stream_name}'. No nextPageToken found.")
-                break

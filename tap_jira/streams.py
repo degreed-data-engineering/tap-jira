@@ -6,8 +6,7 @@ import dateparser
 import os
 
 from singer import metrics, utils, metadata, Transformer
-# Import the new method fetch_issue_details from http.Client
-from .http import Paginator, JiraNotFoundError, NextPageTokenPaginator, Client
+from .http import Paginator,JiraNotFoundError
 from .context import Context
 
 DEFAULT_PAGE_SIZE = 50
@@ -55,35 +54,28 @@ def raise_if_bookmark_cannot_advance(worklogs):
                         .format(worklog_updatedes[0]))
 
 
-def sync_sub_streams(detailed_issue):
-    """
-    Syncs sub-streams (comments, changelogs, transitions) from a *single, detailed* issue object.
-    """
-    # Ensure fields exist before trying to pop or access
-    fields = detailed_issue.get("fields", {})
-
-    comments = fields.pop("comment", {}).get("comments")
-    if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
-        for comment in comments:
-            comment["issueId"] = detailed_issue["id"]
-        ISSUE_COMMENTS.write_page(comments)
-
-    changelogs = detailed_issue.pop("changelog", {}).get("histories")
-    if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
-        changelogs_to_store = []
-        interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
-        for changelog in changelogs:
-            changelog["issueId"] = detailed_issue["id"]
-            # just store changelogs of which fields we are interested in
-            if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
-                changelogs_to_store.append(changelog)
-        CHANGELOGS.write_page(changelogs_to_store)
-
-    transitions = detailed_issue.pop("transitions")
-    if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
-        for transition in transitions:
-            transition["issueId"] = detailed_issue["id"]
-        ISSUE_TRANSITIONS.write_page(transitions)
+def sync_sub_streams(page):
+    for issue in page:
+        comments = issue["fields"].pop("comment")["comments"]
+        if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
+            for comment in comments:
+                comment["issueId"] = issue["id"]
+            ISSUE_COMMENTS.write_page(comments)
+        changelogs = issue.pop("changelog")["histories"]
+        if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
+            changelogs_to_store = []
+            interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
+            for changelog in changelogs:
+                changelog["issueId"] = issue["id"]
+                # just store changelogs of which fields we are interested in
+                if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
+                    changelogs_to_store.append(changelog)
+            CHANGELOGS.write_page(changelogs_to_store)
+        transitions = issue.pop("transitions")
+        if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
+            for transition in transitions:
+                transition["issueId"] = issue["id"]
+            ISSUE_TRANSITIONS.write_page(transitions)
 
 
 def advance_bookmark(worklogs):
@@ -116,7 +108,6 @@ class Stream():
         return "<Stream(" + self.tap_stream_id + ")>"
 
     def sync(self):
-        # Default sync function, should be overridden by specific streams with pagination or custom logic
         page = Context.client.request(self.tap_stream_id, "GET", self.path)
         self.write_page(page)
 
@@ -137,10 +128,6 @@ def update_user_date(page):
     API returns userReleaseDate and userStartDate always in the dd/mm/yyyy format where the month name is in Abbreviation form.
     Dateparser library handles locale value and converts Abbreviation month to number.
     For example, if userReleaseDate is 12/abr/2022 then we are converting it to 2022-04-12.
-    Then, at the end singer-python will transform any DateTime to %Y-%m-%dT00:00:00Z format.
-
-    All the locales are supported except following below locales,
-    Chinese, Italia, Japanese, Korean, Polska, Brasil.
     """
     if page.get('userReleaseDate'):
         page['userReleaseDate'] = transform_user_date(page['userReleaseDate'])
@@ -223,7 +210,7 @@ class BoardsGreenhopper(Stream):
 
                         # modify the issueKeysAddedDuringSprint output into something processable: change key into a value, and add the identifiers
                         issuekeys_added_during_sprint = sprint_report["contents"]["issueKeysAddedDuringSprint"]
-                        if (Context.is_selected(SPRINTREPORTS_ISSUESADDED.tap_stream_id) and len(issuekeys_added_during_sprint)) != 0:
+                        if (Context.is_selected(SPRINTREPORTS_ISSUESADDED.tap_stream_id) and len(issuekeys_added_during_sprint)) != 0: 
                             modify_json = json.dumps(issuekeys_added_during_sprint)
                             modify_json = modify_json.replace('{','[{"boardId":' + board_id + ', "sprintId": ' + sprint_id + ', "issueKeyAddedDuringSprint": ').replace(': true,','}, {"boardId":' + board_id + ', "sprintId": ' + sprint_id + ', "issueKeyAddedDuringSprint":').replace(': true}','}]')
                             modified_dict = json.loads(modify_json)
@@ -290,7 +277,6 @@ class Projects(Stream):
                 "maxResults": DEFAULT_PAGE_SIZE, # maximum number of results to fetch in a page.
                 "startAt": offset #the offset to start at for the next page
             }
-            # For Projects, use the /project/search endpoint which is paginated
             projects = Context.client.request(
                 self.tap_stream_id, "GET", "/rest/api/3/project/search",
                 params=params)
@@ -346,7 +332,7 @@ class ProjectTypes(Stream):
 
 class Users(Stream):
     def sync(self):
-        max_results = 2 # This seems low for users. Consider increasing.
+        max_results = 2
 
         if Context.config.get("groups"):
             groups = Context.config.get("groups").split(",")
@@ -374,141 +360,181 @@ class Users(Stream):
 
 class Issues(Stream):
     def sync(self):
-        updated_bookmark_key = [self.tap_stream_id, "updated"]
+        updated_bookmark = [self.tap_stream_id, "updated"]
+        page_num_offset = [self.tap_stream_id, "offset", "page_num"]
+
+        # -------------------------------------------------------------
+        # 🧩 Optional local testing override: manually load state file
+        # -------------------------------------------------------------
+        if os.getenv("LOCAL_STATE_DEBUG", "false").lower() == "true":
+            state_path = os.getenv("TAP_JIRA_STATE_PATH", "jira.json")
+            if os.path.exists(state_path):
+                try:
+                    with open(state_path, "r") as f:
+                        state_data = json.load(f)
+                        bookmarks = (
+                            state_data.get("completed", {})
+                            .get("singer_state", {})
+                            .get("bookmarks", {})
+                        )
+                        if bookmarks and "issues" in bookmarks and "updated" in bookmarks["issues"]:
+                            state_val = bookmarks["issues"]["updated"]
+                            Context.set_bookmark(updated_bookmark, state_val)
+                            Context.state["bookmarks"]["issues"]["updated"] = state_val
+                            LOGGER.info(
+                                f"[LOCAL DEBUG] Loaded state bookmark manually from {state_path}: {state_val}"
+                            )
+                        else:
+                            LOGGER.warning(
+                                f"[LOCAL DEBUG] No valid 'issues.updated' bookmark in {state_path}"
+                            )
+                except Exception as e:
+                    LOGGER.warning(f"[LOCAL DEBUG] Could not load {state_path}: {e}")
+            else:
+                LOGGER.warning(f"[LOCAL DEBUG] State file {state_path} not found")
+
+        # -------------------------------------------------------------
+        # STEP 1: Resolve start_date (priority: env > state > config)
+        # -------------------------------------------------------------
         last_updated = None
         source_used = None
-        
-        # 1. Check for a non-empty Environment Variable
-        env_start_date = os.getenv("TAP_JIRA_START_DATE")
-        if env_start_date and env_start_date.strip():
-            LOGGER.info(f"Found non-empty TAP_JIRA_START_DATE: '{env_start_date}'")
+
+        env_start_date = os.getenv("TAP_JIRA_START_DATE") or os.getenv("tapJiraStartDate")
+
+        # Normalize empty or whitespace-only env vars to None (so we fall back to state)
+        if env_start_date is not None and not env_start_date.strip():
+            env_start_date = None
+
+        LOGGER.info(f"Raw TAP_JIRA_START_DATE env seen as: {repr(env_start_date)}")
+
+        # ✅ Prefer environment variable if explicitly provided and non-empty
+        if env_start_date:
+            LOGGER.info(f"Environment start_date explicitly provided: {env_start_date}")
             try:
-                last_updated = utils.strptime_to_utc(env_start_date)
-                source_used = f"ENVIRONMENT VARIABLE ({env_start_date})"
+                last_updated = utils.strptime_to_utc(env_start_date.strip())
+                source_used = f"ENV VAR ({env_start_date})"
             except Exception as e:
-                LOGGER.warning(f"Could not parse TAP_JIRA_START_DATE. Error: {e}")
-        else:
-            LOGGER.info("TAP_JIRA_START_DATE is missing or empty. Checking for state.")
+                LOGGER.warning(f"Invalid env TAP_JIRA_START_DATE: {env_start_date}. Error: {e}")
 
-        # 2. Check for State (if ENV was not used)
+        # 🔁 Fallback to Meltano state bookmark
         if not last_updated:
-            state_value = None
-            # This robust block checks all the places the bookmark could be
-            if isinstance(Context.state, dict):
-                # Standard Meltano state location
-                state_value = Context.state.get("bookmarks", {}).get("issues", {}).get("updated")
-                
-                # Check for nested Meltano state structure as a fallback
-                if not state_value:
-                    nested_val = (Context.state.get("completed", {})
-                                  .get("singer_state", {})
-                                  .get("bookmarks", {})
-                                  .get("issues", {})
-                                  .get("updated"))
-                    if nested_val:
-                        state_value = nested_val
-            
+            state_value = Context.bookmark(updated_bookmark)
             if state_value:
-                LOGGER.info(f"Found bookmark in state file: '{state_value}'")
                 try:
-                    last_updated = utils.strptime_to_utc(state_value)
-                    source_used = f"STATE FILE ({state_value})"
+                    last_updated = utils.strptime_to_utc(str(state_value).strip())
+                    source_used = f"STATE ({state_value})"
                 except Exception as e:
-                    LOGGER.warning(f"Could not parse state bookmark. Error: {e}.")
-            else:
-                LOGGER.info("No bookmark found in state. Checking config.")
+                    LOGGER.warning(f"Invalid state bookmark format: {state_value}. Error: {e}")
 
-        # 3. Check for Meltano Config (if ENV and State were not used)
+        # 🧭 Fallback to config start_date
         if not last_updated:
-            config_date = Context.config.get("start_date")
-            if config_date:
-                LOGGER.info(f"Found start_date in config: '{config_date}'")
+            cfg_date = Context.config.get("start_date")
+            if cfg_date:
                 try:
-                    last_updated = utils.strptime_to_utc(config_date)
-                    source_used = f"MELTANO.YML CONFIG ({config_date})"
+                    last_updated = utils.strptime_to_utc(str(cfg_date).strip())
+                    source_used = f"CONFIG ({cfg_date})"
                 except Exception as e:
-                    LOGGER.warning(f"Could not parse start_date from config. Error: {e}.")
-            else:
-                LOGGER.info("No start_date found in config.")
+                    LOGGER.warning(f"Invalid config start_date: {cfg_date}. Error: {e}")
 
-        # 4. Fallback to a default if nothing is found
+
+        # 🚨 Final fallback
         if not last_updated:
-            fallback_date = "2021-01-01T00:00:00Z"
-            LOGGER.warning(f"No valid start_date found. Using default fallback: {fallback_date}")
-            last_updated = utils.strptime_to_utc(fallback_date)
-            source_used = "DEFAULT FALLBACK"
-        
-        LOGGER.info(f"🏁 Final start_date resolved from: {source_used} -> {last_updated.isoformat()}")
-        
+            LOGGER.warning("No valid start_date found in env/state/config — falling back to 2021-01-01T00:00:00Z.")
+            last_updated = utils.strptime_to_utc("2021-01-01T00:00:00Z")
+            source_used = "DEFAULT FALLBACK (2021-01-01)"
+
+        LOGGER.info(f"✅ start_date source resolved from {source_used}")
+
+        # -------------------------------------------------------------
+        # STEP 2: Resolve optional end_date (env > config)
+        # -------------------------------------------------------------
         end_date = None
-        env_end_date = os.getenv("TAP_JIRA_END_DATE")
-        if env_end_date:
+        env_end_date = os.getenv("TAP_JIRA_END_DATE") or os.getenv("tapJiraEndDate")
+        cfg_end_date = Context.config.get("end_date")
+
+        if env_end_date and env_end_date.strip():
             try:
-                end_date = utils.strptime_to_utc(env_end_date)
+                end_date = utils.strptime_to_utc(env_end_date.strip())
                 LOGGER.info(f"Using end_date from environment: {env_end_date}")
             except Exception as e:
-                LOGGER.warning(f"Could not parse TAP_JIRA_END_DATE: {e}")
+                LOGGER.warning(f"Invalid TAP_JIRA_END_DATE: {env_end_date}. Error: {e}")
+        elif cfg_end_date and str(cfg_end_date).strip():
+            try:
+                end_date = utils.strptime_to_utc(str(cfg_end_date).strip())
+                LOGGER.info(f"Using end_date from config: {cfg_end_date}")
+            except Exception as e:
+                LOGGER.warning(f"Invalid config end_date: {cfg_end_date}. Error: {e}")
 
-        timezone = Context.client.timezone
+        # -------------------------------------------------------------
+        # STEP 3: Format dates with timezone
+        # -------------------------------------------------------------
+        timezone = Context.retrieve_timezone()
         start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
-
         end_date_str = (
             end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
             if end_date
             else None
         )
 
-        if end_date_str:
-            jql = f"updated >= '{start_date_str}' AND updated < '{end_date_str}' ORDER BY updated ASC"
-        else:
-            jql = f"updated >= '{start_date_str}' ORDER BY updated ASC"
-            
-        LOGGER.info(f"🧩 Using JQL query: {jql}")
+        LOGGER.info(f"🧭 Final resolved start_date_str={start_date_str}, end_date_str={end_date_str}")
+        if not end_date_str:
+            LOGGER.warning("⚠️ end_date_str is None — falling back to open-ended JQL (no upper bound).")
 
-        # Use the new paginator and the new endpoint
-        pager = NextPageTokenPaginator(Context.client, items_key="issues", page_size=DEFAULT_PAGE_SIZE)
-        path = "/rest/api/3/search/jql" # <-- THE NEW, CORRECT ENDPOINT
+
+        # -------------------------------------------------------------
+        # STEP 4: Build JQL
+        # -------------------------------------------------------------
+        jql = (
+            f"updated >= '{start_date_str}' AND updated < '{end_date_str}' order by updated asc"
+            if end_date_str
+            else f"updated >= '{start_date_str}' order by updated asc"
+        )
 
         params = {
-            "jql": jql,
+            "fields": "*all",
             "expand": "changelog,transitions",
-            "fields": "*all"
+            "validateQuery": "strict",
+            "jql": jql,
+            "maxResults": DEFAULT_PAGE_SIZE,
         }
 
-        current_max_updated_timestamp = last_updated
-        
-        for issue_page in pager.pages(self.tap_stream_id, path, params=params):
-            issues_to_write = []
-            for issue in issue_page:
-                sync_sub_streams(issue)
+        LOGGER.info(f"Fetching issues with JQL: {jql}")
 
-                issue.pop("changelog", None)
-                issue.pop("transitions", None)
-                if "fields" in issue and "comment" in issue["fields"]:
-                    issue["fields"].pop("comment", None)
-                
-                issues_to_write.append(issue)
+        # -------------------------------------------------------------
+        # STEP 5: Pagination and sync
+        # -------------------------------------------------------------
+        page_num = Context.bookmark(page_num_offset) or 0
+        pager = Paginator(Context.client, items_key="issues", page_num=page_num)
 
-                if issue.get("fields", {}).get("updated"):
-                    issue_updated_ts = utils.strptime_to_utc(issue["fields"]["updated"])
-                    if issue_updated_ts > current_max_updated_timestamp:
-                        current_max_updated_timestamp = issue_updated_ts
-            
-            if issues_to_write:
-                self.write_page(issues_to_write)
-            
-            Context.set_bookmark(updated_bookmark_key, current_max_updated_timestamp)
+        for page in pager.pages(self.tap_stream_id, "GET", "/rest/api/3/search/jql", params=params):
+            if not page:
+                LOGGER.info("No issues returned for JQL; skipping page.")
+                continue
+
+            sync_sub_streams(page)
+
+            for issue in page:
+                issue["fields"].pop("worklog", None)
+                issue["fields"].pop("operations", None)
+
+            if not page[-1]["fields"].get("updated"):
+                LOGGER.warning("Last issue missing 'updated'; skipping bookmark update.")
+                continue
+
+            last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
+            self.write_page(page)
+
+            Context.set_bookmark(page_num_offset, pager.next_page_num)
             singer.write_state(Context.state)
-        
-        # If the run was bounded by an end_date, the bookmark should be set to that date.
-        final_bookmark_value = current_max_updated_timestamp
-        if end_date and end_date > current_max_updated_timestamp:
-            final_bookmark_value = end_date
-            LOGGER.info(f"Run was bounded by an end_date. Advancing bookmark to {end_date.isoformat()}")
 
-        Context.set_bookmark(updated_bookmark_key, final_bookmark_value)
+        # -------------------------------------------------------------
+        # STEP 6: Finalize bookmarks
+        # -------------------------------------------------------------
+        Context.set_bookmark(page_num_offset, None)
+        Context.set_bookmark(updated_bookmark, last_updated)
         singer.write_state(Context.state)
-        LOGGER.info(f"Final state bookmark for 'issues' is set to: {final_bookmark_value.isoformat()}")
+        LOGGER.info(f"Finished syncing issues up to: {last_updated.isoformat()}")
+
 
 
 class Worklogs(Stream):
