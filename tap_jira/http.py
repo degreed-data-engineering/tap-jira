@@ -164,32 +164,47 @@ class Client():
         self.user_agent = config.get("user_agent")
         self.login_timer = None
         self.timeout = get_request_timeout(config)
-
-        # Assign False for cloud Jira instance
         self.is_on_prem_instance = False
 
         if self.is_cloud:
+            # This logic remains for anyone using OAuth, which is not you.
             LOGGER.info("Using OAuth based API authentication")
-            self.auth = None
+            self.auth_method = 'oauth'
             self.base_url = 'https://api.atlassian.com/ex/jira/{}{}'
             self.cloud_id = config.get('cloud_id')
             self.access_token = config.get('access_token')
             self.refresh_token = config.get('refresh_token')
             self.oauth_client_id = config.get('oauth_client_id')
             self.oauth_client_secret = config.get('oauth_client_secret')
-
-            # Only appears to be needed once for any 6 hour period. If
-            # running the tap for more than 6 hours is needed this will
-            # likely need to be more complicated.
             self.refresh_credentials()
             self.test_credentials_are_authorized()
+        
+        # --- MODIFIED ---
+        # This is the new logic for your pre-encoded Basic Auth key.
+        elif 'api_key' in config:
+            LOGGER.info("Using Pre-encoded Basic Auth API Key")
+            self.auth_method = 'api_key'
+            self.base_url = config.get("base_url")
+            self.api_key = config.get("api_key")
+            if not self.api_key:
+                raise Exception("Configuration is missing required key: 'api_key'")
+            self.test_basic_credentials_are_authorized()
+        # --- END MODIFIED ---
+            
         else:
+            # This is the original legacy Basic Auth logic.
             LOGGER.info("Using Basic Auth API authentication")
+            self.auth_method = 'basic'
             self.base_url = config.get("base_url")
             self.auth = HTTPBasicAuth(config.get("username"), config.get("password"))
             self.test_basic_credentials_are_authorized()
 
     def url(self, path):
+        if not path:
+            # Prevent NoneType error and log diagnostic info
+            LOGGER.warning("[DEBUG] Client.url() called with None path — returning base_url only")
+            return self.base_url
+
         if self.is_cloud:
             return self.base_url.format(self.cloud_id, path)
 
@@ -199,15 +214,22 @@ class Client():
         base_url = 'https://' + base_url
         return base_url.rstrip("/") + "/" + path.lstrip("/")
 
+
     def _headers(self, headers):
         headers = headers.copy()
         if self.user_agent:
             headers["User-Agent"] = self.user_agent
 
         if self.is_cloud:
-            # Add OAuth Headers
             headers['Accept'] = 'application/json'
             headers['Authorization'] = 'Bearer {}'.format(self.access_token)
+            
+        # --- MODIFIED ---
+        # If we are using the api_key method, set the header directly.
+        elif self.auth_method == 'api_key':
+            headers['Accept'] = 'application/json'
+            headers['Authorization'] = f"Basic {self.api_key}"
+        # --- END MODIFIED ---
 
         return headers
 
@@ -217,35 +239,55 @@ class Client():
                           max_tries=6,
                           giveup=lambda e: not should_retry_httperror(e))
     def send(self, method, path, headers={}, **kwargs):
-        if self.is_cloud:
-            # OAuth Path
-            request = requests.Request(method,
-                                       self.url(path),
-                                       headers=self._headers(headers),
-                                       **kwargs)
-        else:
-            # Basic Auth Path
-            request = requests.Request(method,
-                                       self.url(path),
-                                       auth=self.auth,
-                                       headers=self._headers(headers),
-                                       **kwargs)
+        # --- MODIFIED ---
+        # This logic is simplified. We build the full headers first, then decide
+        # whether to pass the `auth` object for legacy basic auth.
+        full_headers = self._headers(headers)
+        
+        # The `auth` object is only needed for the original username/password method.
+        # For OAuth and our new api_key method, the Authorization header is already set.
+        auth_object = self.auth if self.auth_method == 'basic' else None
+
+        request = requests.Request(method,
+                                   self.url(path),
+                                   auth=auth_object,
+                                   headers=full_headers,
+                                   **kwargs)
+        # --- END MODIFIED ---
         return self.session.send(request.prepare(), timeout=self.timeout)
 
     @backoff.on_exception(backoff.constant,
                           JiraBackoffError,
                           max_tries=10,
                           interval=60)
-    def request(self, tap_stream_id, *args, **kwargs):
+    def request(self, tap_stream_id, method, path, **kwargs):
         wait = (self.next_request_at - datetime.now()).total_seconds()
         if wait > 0:
             time.sleep(wait)
         with metrics.http_request_timer(tap_stream_id) as timer:
-            response = self.send(*args, **kwargs)
+            response = self.send(method, path, **kwargs)
             self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
             timer.tags[metrics.Tag.http_status_code] = response.status_code
         check_status(response)
-        return response.json()
+        try:
+            return response.json()
+        except ValueError:
+            return response.text
+
+        # --- NEW METHOD FOR FETCHING INDIVIDUAL ISSUES ---
+    @backoff.on_exception(backoff.constant,
+                      JiraBackoffError,
+                      max_tries=10,
+                      interval=60)
+    def fetch_issue_details(self, issue_id_or_key, tap_stream_id="issues", fields="*all", expand="changelog,transitions"):
+        path = f"/rest/api/3/issue/{issue_id_or_key}"
+        params = {
+            "fields": fields,
+            "expand": expand
+        }
+        LOGGER.info(f"[DEBUG] Fetching detailed issue {issue_id_or_key} with fields={fields}, expand={expand}")
+        # Use a GET request for individual issue details
+        return self.request(tap_stream_id, "GET", path, params=params)
 
     # backoff for Timeout error is already included in "Exception"
     # as it's a parent class of "Timeout" error
@@ -255,6 +297,7 @@ class Client():
                 "client_id": self.oauth_client_id,
                 "client_secret": self.oauth_client_secret,
                 "refresh_token": self.refresh_token}
+        resp = None
         try:
             resp = self.session.post(
                 "https://auth.atlassian.com/oauth/token",
@@ -275,8 +318,8 @@ class Client():
 
     def test_credentials_are_authorized(self):
         # Assume that everyone has issues, so we try and hit that endpoint
-        self.request("issues", "GET", "/rest/api/3/search/jql",
-                     params={"maxResults": 1})
+        self.request("issues", "POST", "/rest/api/3/search/jql", # This path is incorrect for GET, but client.request will convert it to POST if json body is provided.
+                     json={"maxResults": 1, "jql": "ORDER BY created DESC"}) # ✅ Use POST with JSON body for /search/jql
 
     def test_basic_credentials_are_authorized(self):
         # Make a call to myself endpoint for verify creds
@@ -302,6 +345,9 @@ class Paginator():
             if self.order_by:
                 params["orderBy"] = self.order_by
 
+            # ✅ Add log line to trace pagination
+            LOGGER.info(f"Fetching Jira page: startAt={params['startAt']}, maxResults={params['maxResults']}")
+
             response = self.client.request(*args, params=params, **kwargs)
 
             if self.items_key:
@@ -309,14 +355,18 @@ class Paginator():
             else:
                 page = response
 
-            # Jira Cloud sometimes omits 'maxResults'
             max_results = response.get("maxResults", params["maxResults"])
+            total = response.get("total", "unknown")
+            LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
 
             if len(page) < max_results:
+                LOGGER.info("No more pages remaining — stopping pagination.")
                 self.next_page_num = None
             else:
                 self.next_page_num += max_results
+                LOGGER.info(f"Next page will startAt={self.next_page_num}")
 
             if page:
+                LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
                 yield page
 
