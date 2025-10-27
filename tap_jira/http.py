@@ -327,6 +327,8 @@ class Client():
         # Assign True value to is_on_prem_instance property for on-prem Jira instance
         self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
 
+# In your http.py file
+
 class Paginator():
     def __init__(self, client, items_key="values"):
         """
@@ -334,45 +336,41 @@ class Paginator():
         """
         self.client = client
         self.items_key = items_key
-        # We no longer track a page number. We track the token for the next page.
-        # It starts as None, indicating this is the very first request.
-        self.next_page_token = None
-        # A flag to ensure we run the loop at least once for the initial request.
-        self.is_first_request = True
+        # Start with a sentinel value that is not None to ensure the loop runs at least once.
+        self.next_page_token = ""
 
     def pages(self, *args, **kwargs):
         """
         Returns a generator which yields pages of data using token-based pagination.
-        This method expects to receive a 'json' dictionary in kwargs.
+        This method expects to receive a 'json' dictionary in kwargs for the initial request.
         """
-        json_body = kwargs.pop("json", {}).copy()
+        # Make a copy of the initial request body. This contains the JQL.
+        initial_json_body = kwargs.pop("json", {}).copy()
 
-        # --- Start with a sentinel value to ensure the loop runs once ---
-        next_page_token = "" 
-
-        # --- The loop continues as long as we have a token (or it's the first run) ---
-        while next_page_token is not None:
-            if next_page_token:
-                # For subsequent requests, add the token.
-                # Crucially, we keep the other parameters like maxResults.
-                json_body["nextPageToken"] = next_page_token
+        # The loop continues as long as the token is not None.
+        while self.next_page_token is not None:
+            # --- THIS IS THE KEY LOGIC ---
+            if self.next_page_token == "":
+                # This is the FIRST request. Use the full JSON body with the JQL query.
+                current_json_body = initial_json_body
             else:
-                # For the first request, ensure no old token is present.
-                json_body.pop("nextPageToken", None)
+                # This is a SUBSEQUENT request. The API expects a body
+                # containing ONLY the token. Do not send the JQL again.
+                current_json_body = { "nextPageToken": self.next_page_token }
+            # --- END OF KEY LOGIC ---
 
-            response = self.client.request(*args, json=json_body, **kwargs)
+            # Make the request with the correct JSON body for this iteration.
+            response = self.client.request(*args, json=current_json_body, **kwargs)
 
+            # Extract the data records from the response.
             page = response.get(self.items_key, [])
 
+            # Check if the API says this is the last page.
             is_last = response.get("isLast", True)
             
             # Update the token for the next iteration.
-            # If 'nextPageToken' is missing or is_last is true, this will become None, stopping the loop.
-            next_page_token = response.get("nextPageToken") if not is_last else None
+            # If 'isLast' is true or the token is missing, this will become None, stopping the loop.
+            self.next_page_token = response.get("nextPageToken") if not is_last else None
 
             if page:
                 yield page
-
-            # Explicitly break if we know we are done.
-            if next_page_token is None:
-                break
