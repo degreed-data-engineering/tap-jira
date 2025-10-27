@@ -168,7 +168,7 @@ class Client():
 
         if self.is_cloud:
             # This logic remains for anyone using OAuth, which is not you.
-            LOGGER.info("Using OAuth based API authentication")
+            # LOGGER.info("Using OAuth based API authentication")
             self.auth_method = 'oauth'
             self.base_url = 'https://api.atlassian.com/ex/jira/{}{}'
             self.cloud_id = config.get('cloud_id')
@@ -182,7 +182,7 @@ class Client():
         # --- MODIFIED ---
         # This is the new logic for your pre-encoded Basic Auth key.
         elif 'api_key' in config:
-            LOGGER.info("Using Pre-encoded Basic Auth API Key")
+            # LOGGER.info("Using Pre-encoded Basic Auth API Key")
             self.auth_method = 'api_key'
             self.base_url = config.get("base_url")
             self.api_key = config.get("api_key")
@@ -193,7 +193,7 @@ class Client():
             
         else:
             # This is the original legacy Basic Auth logic.
-            LOGGER.info("Using Basic Auth API authentication")
+            # LOGGER.info("Using Basic Auth API authentication")
             self.auth_method = 'basic'
             self.base_url = config.get("base_url")
             self.auth = HTTPBasicAuth(config.get("username"), config.get("password"))
@@ -202,7 +202,7 @@ class Client():
     def url(self, path):
         if not path:
             # Prevent NoneType error and log diagnostic info
-            LOGGER.warning("[DEBUG] Client.url() called with None path — returning base_url only")
+            # LOGGER.warning("[DEBUG] Client.url() called with None path — returning base_url only")
             return self.base_url
 
         if self.is_cloud:
@@ -285,7 +285,7 @@ class Client():
             "fields": fields,
             "expand": expand
         }
-        LOGGER.info(f"[DEBUG] Fetching detailed issue {issue_id_or_key} with fields={fields}, expand={expand}")
+        # LOGGER.info(f"[DEBUG] Fetching detailed issue {issue_id_or_key} with fields={fields}, expand={expand}")
         # Use a GET request for individual issue details
         return self.request(tap_stream_id, "GET", path, params=params)
 
@@ -311,7 +311,7 @@ class Client():
                 error_message = error_message + ", Response from Jira: {}".format(resp.text)
             raise Exception(error_message) from ex
         finally:
-            LOGGER.info("Starting new login timer")
+            # LOGGER.info("Starting new login timer")
             self.login_timer = threading.Timer(REFRESH_TOKEN_EXPIRATION_PERIOD,
                                                self.refresh_credentials)
             self.login_timer.start()
@@ -346,7 +346,7 @@ class Paginator():
                 params["orderBy"] = self.order_by
 
             # ✅ Add log line to trace pagination
-            LOGGER.info(f"Fetching Jira page: startAt={params['startAt']}, maxResults={params['maxResults']}")
+            # LOGGER.info(f"Fetching Jira page: startAt={params['startAt']}, maxResults={params['maxResults']}")
 
             response = self.client.request(*args, params=params, **kwargs)
 
@@ -357,16 +357,16 @@ class Paginator():
 
             max_results = response.get("maxResults", params["maxResults"])
             total = response.get("total", "unknown")
-            LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
+            # LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
 
             if len(page) < max_results:
-                LOGGER.info("No more pages remaining — stopping pagination.")
+                # LOGGER.info("No more pages remaining — stopping pagination.")
                 self.next_page_num = None
             else:
                 self.next_page_num += max_results
-                LOGGER.info(f"Next page will startAt={self.next_page_num}")
+                # LOGGER.info(f"Next page will startAt={self.next_page_num}")
 
             if page:
-                LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
+                # LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
                 yield page
 
