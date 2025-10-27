@@ -457,10 +457,12 @@ class Issues(Stream):
         # -------------------------------------------------------------
         # STEP 4: Build JQL
         # -------------------------------------------------------------
+        # --- THIS IS THE NEW, CORRECTED CODE ---
+        # We now use double quotes around the date variables.
         jql = (
-            f"updated >= '{start_date_str}' AND updated < '{end_date_str}' order by updated asc"
+            f'updated >= "{start_date_str}" AND updated < "{end_date_str}" order by updated asc'
             if end_date_str
-            else f"updated >= '{start_date_str}' order by updated asc"
+            else f'updated >= "{start_date_str}" order by updated asc'
         )
         
         json_body = {
