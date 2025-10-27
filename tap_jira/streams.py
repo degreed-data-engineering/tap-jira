@@ -446,13 +446,8 @@ class Issues(Stream):
         # -------------------------------------------------------------
         # STEP 3: Format dates with timezone
         # -------------------------------------------------------------
-        timezone = Context.retrieve_timezone()
-        start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
-        end_date_str = (
-            end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
-            if end_date
-            else None
-        )
+        start_date_str = last_updated.strftime("%Y-%m-%d")
+        end_date_str = end_date.strftime("%Y-%m-%d") if end_date else None
 
         # -------------------------------------------------------------
         # STEP 4: Build JQL
