@@ -464,7 +464,7 @@ class Issues(Stream):
         )
         
         json_body = {
-            "fields": ["*all"], # Using a list is slightly more robust
+            "fields": "*all",  # Change this from a list to a string
             "expand": ["changelog", "transitions"],
             "validateQuery": "strict",
             "jql": jql,
