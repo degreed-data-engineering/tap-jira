@@ -343,46 +343,36 @@ class Paginator():
     def pages(self, *args, **kwargs):
         """
         Returns a generator which yields pages of data using token-based pagination.
-        This method expects to receive a 'json' dictionary in kwargs, which it will
-        modify for subsequent page requests.
+        This method expects to receive a 'json' dictionary in kwargs.
         """
-        # We will be modifying the JSON body of the request.
-        # .copy() is used to avoid modifying the original dictionary from the caller.
         json_body = kwargs.pop("json", {}).copy()
 
-        # The loop continues as long as this is the first request OR we have a token for the next page.
-        while self.is_first_request or self.next_page_token:
+        # --- Start with a sentinel value to ensure the loop runs once ---
+        next_page_token = "" 
 
-            if self.is_first_request:
-                # For the very first request, we use the original JSON body passed in.
-                # Then we set the flag to False for all subsequent loops.
-                self.is_first_request = False
+        # --- The loop continues as long as we have a token (or it's the first run) ---
+        while next_page_token is not None:
+            if next_page_token:
+                # For subsequent requests, add the token.
+                # Crucially, we keep the other parameters like maxResults.
+                json_body["nextPageToken"] = next_page_token
             else:
-                # For all subsequent requests, the API expects a new JSON body
-                # containing only the token for the next page.
-                json_body = {
-                    "nextPageToken": self.next_page_token
-                }
+                # For the first request, ensure no old token is present.
+                json_body.pop("nextPageToken", None)
 
-            # Make the request with the appropriate JSON body for the current page.
             response = self.client.request(*args, json=json_body, **kwargs)
 
-            # Extract the actual data records (e.g., the 'issues' list) from the response.
             page = response.get(self.items_key, [])
 
-            # --- This is the key logic for token-based pagination ---
-            # Check the 'isLast' flag from the response. Default to True if it's missing to be safe.
             is_last = response.get("isLast", True)
-
-            # Get the token for the *next* page. It will be None if this is the last page.
-            self.next_page_token = response.get("nextPageToken")
-            # --- End of key logic ---
+            
+            # Update the token for the next iteration.
+            # If 'nextPageToken' is missing or is_last is true, this will become None, stopping the loop.
+            next_page_token = response.get("nextPageToken") if not is_last else None
 
             if page:
-                # Only yield the page if it contains data.
                 yield page
 
-            # If the API says this is the last page, or if it gives us no token to continue,
-            # we must stop the loop to prevent infinite requests.
-            if is_last or not self.next_page_token:
+            # Explicitly break if we know we are done.
+            if next_page_token is None:
                 break

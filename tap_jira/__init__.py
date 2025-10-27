@@ -10,26 +10,38 @@ from .context import Context
 from .http import Client
 
 LOGGER = singer.get_logger()
-REQUIRED_CONFIG_KEYS_CLOUD = ["start_date",
-                              "user_agent",
-                              "cloud_id",
-                              "access_token",
-                              "refresh_token",
-                              "oauth_client_id",
-                              "oauth_client_secret"]
-REQUIRED_CONFIG_KEYS_HOSTED = ["start_date",
-                               "username",
-                               "password",
-                               "base_url",
-                               "user_agent"]
+REQUIRED_CONFIG_KEYS_CLOUD = [
+    'cloud_id', 'access_token', 'refresh_token', 'oauth_client_id', 'oauth_client_secret'
+]
+
+REQUIRED_CONFIG_KEYS_BASIC = [
+    'username', 'password', 'base_url', 'start_date'
+]
+
+REQUIRED_CONFIG_KEYS_API_KEY = [
+    'api_key', 'base_url', 'start_date'
 
 
 def get_args():
-    unchecked_args = utils.parse_args([])
-    if 'username' in unchecked_args.config.keys():
-        return utils.parse_args(REQUIRED_CONFIG_KEYS_HOSTED)
+    """
+    This function now dynamically determines which config keys are required
+    based on the provided config file.
+    """
+    # First, get all arguments without validation
+    args = utils.parse_args([]) 
+    config = args.config
 
-    return utils.parse_args(REQUIRED_CONFIG_KEYS_CLOUD)
+    # Now, decide which set of keys to require
+    if 'api_key' in config:
+        required_keys = REQUIRED_CONFIG_KEYS_API_KEY
+    elif 'username' in config and 'password' in config:
+        required_keys = REQUIRED_CONFIG_KEYS_BASIC
+    else:
+        # Default to cloud/OAuth if no other method is specified
+        required_keys = REQUIRED_CONFIG_KEYS_CLOUD
+
+    # Re-parse the arguments, this time with the correct validation
+    return utils.parse_args(required_keys)
 
 
 def get_abs_path(path):
