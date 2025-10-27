@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import time
 import threading
 import re
+import json 
 from requests.exceptions import (HTTPError, Timeout)
 from requests.auth import HTTPBasicAuth
 import requests
@@ -264,6 +265,10 @@ class Client():
         wait = (self.next_request_at - datetime.now()).total_seconds()
         if wait > 0:
             time.sleep(wait)
+        # --- ADD THIS DEBUGGING BLOCK ---
+        if 'json' in kwargs:
+            LOGGER.info(f"JIRA REQUEST PAYLOAD for '{path}': {json.dumps(kwargs['json'])}")
+        # --- END DEBUGGING BLOCK ---    
         with metrics.http_request_timer(tap_stream_id) as timer:
             response = self.send(method, path, **kwargs)
             self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
