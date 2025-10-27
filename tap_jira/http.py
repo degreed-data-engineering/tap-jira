@@ -328,45 +328,61 @@ class Client():
         self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
 
 class Paginator():
-    def __init__(self, client, page_num=0, order_by=None, items_key="values"):
+    def __init__(self, client, items_key="values"):
+        """
+        Initializes a Paginator designed for token-based pagination.
+        """
         self.client = client
-        self.next_page_num = page_num
-        self.order_by = order_by
         self.items_key = items_key
+        # We no longer track a page number. We track the token for the next page.
+        # It starts as None, indicating this is the very first request.
+        self.next_page_token = None
+        # A flag to ensure we run the loop at least once for the initial request.
+        self.is_first_request = True
 
     def pages(self, *args, **kwargs):
-        """Returns a generator which yields pages of data."""
+        """
+        Returns a generator which yields pages of data using token-based pagination.
+        This method expects to receive a 'json' dictionary in kwargs, which it will
+        modify for subsequent page requests.
+        """
+        # We will be modifying the JSON body of the request.
+        # .copy() is used to avoid modifying the original dictionary from the caller.
+        json_body = kwargs.pop("json", {}).copy()
 
-        params = kwargs.pop("params", {}).copy()
-        while self.next_page_num is not None:
-            # Always ensure defaults
-            params.setdefault("maxResults", 50)
-            params["startAt"] = self.next_page_num
-            if self.order_by:
-                params["orderBy"] = self.order_by
+        # The loop continues as long as this is the first request OR we have a token for the next page.
+        while self.is_first_request or self.next_page_token:
 
-            # ✅ Add log line to trace pagination
-            # LOGGER.info(f"Fetching Jira page: startAt={params['startAt']}, maxResults={params['maxResults']}")
-
-            response = self.client.request(*args, params=params, **kwargs)
-
-            if self.items_key:
-                page = response.get(self.items_key, [])
+            if self.is_first_request:
+                # For the very first request, we use the original JSON body passed in.
+                # Then we set the flag to False for all subsequent loops.
+                self.is_first_request = False
             else:
-                page = response
+                # For all subsequent requests, the API expects a new JSON body
+                # containing only the token for the next page.
+                json_body = {
+                    "nextPageToken": self.next_page_token
+                }
 
-            max_results = response.get("maxResults", params["maxResults"])
-            total = response.get("total", "unknown")
-            # LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
+            # Make the request with the appropriate JSON body for the current page.
+            response = self.client.request(*args, json=json_body, **kwargs)
 
-            if len(page) < max_results:
-                # LOGGER.info("No more pages remaining — stopping pagination.")
-                self.next_page_num = None
-            else:
-                self.next_page_num += max_results
-                # LOGGER.info(f"Next page will startAt={self.next_page_num}")
+            # Extract the actual data records (e.g., the 'issues' list) from the response.
+            page = response.get(self.items_key, [])
+
+            # --- This is the key logic for token-based pagination ---
+            # Check the 'isLast' flag from the response. Default to True if it's missing to be safe.
+            is_last = response.get("isLast", True)
+
+            # Get the token for the *next* page. It will be None if this is the last page.
+            self.next_page_token = response.get("nextPageToken")
+            # --- End of key logic ---
 
             if page:
-                # LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
+                # Only yield the page if it contains data.
                 yield page
 
+            # If the API says this is the last page, or if it gives us no token to continue,
+            # we must stop the loop to prevent infinite requests.
+            if is_last or not self.next_page_token:
+                break

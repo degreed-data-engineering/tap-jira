@@ -462,23 +462,23 @@ class Issues(Stream):
             if end_date_str
             else f"updated >= '{start_date_str}' order by updated asc"
         )
-
-        params = {
-            "fields": "*all",
-            "expand": "changelog,transitions",
+        
+        json_body = {
+            "fields": ["*all"], # Using a list is slightly more robust
+            "expand": ["changelog", "transitions"],
             "validateQuery": "strict",
             "jql": jql,
             "maxResults": DEFAULT_PAGE_SIZE,
         }
-        LOGGER.info(f"Fetching issues with JQL: {jql}")
 
         # -------------------------------------------------------------
         # STEP 5: Pagination and sync
+        # --- MODIFIED: Uses the new Paginator with POST and JSON body ---
         # -------------------------------------------------------------
-        page_num = Context.bookmark(page_num_offset) or 0
-        pager = Paginator(Context.client, items_key="issues", page_num=page_num)
+        pager = Paginator(Context.client, items_key="issues")
 
-        for page in pager.pages(self.tap_stream_id, "GET", "/rest/api/3/search/jql", params=params):
+        # Make a POST request, passing the json_body. The Paginator will handle adding the `nextPageToken`.
+        for page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=json_body):
             if not page:
                 continue
 
@@ -491,17 +491,23 @@ class Issues(Stream):
             if not page[-1]["fields"].get("updated"):
                 continue
 
+            # We still track the latest 'updated' timestamp from the records we process.
             last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
             self.write_page(page)
 
-            Context.set_bookmark(page_num_offset, pager.next_page_num)
-            singer.write_state(Context.state)
+            # We no longer write state inside the loop.
 
         # -------------------------------------------------------------
         # STEP 6: Finalize bookmarks
+        # --- MODIFIED: Clean up old bookmark and write state once at the end ---
         # -------------------------------------------------------------
+        # Clean up the old, now-unused page_num bookmark from the state file.
         Context.set_bookmark(page_num_offset, None)
+        
+        # Set the final high-water mark for the 'updated' timestamp.
         Context.set_bookmark(updated_bookmark, last_updated)
+        
+        # Write the final state once at the very end of the sync.
         singer.write_state(Context.state)
 
 
