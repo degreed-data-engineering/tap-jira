@@ -446,15 +446,24 @@ class Issues(Stream):
         # -------------------------------------------------------------
         # STEP 3: Format dates with timezone
         # -------------------------------------------------------------
-        start_date_str = last_updated.strftime("%Y-%m-%d")
-        end_date_str = end_date.strftime("%Y-%m-%d") if end_date else None
+        timezone = Context.retrieve_timezone()
+        start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+        end_date_str = (
+            end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
+            if end_date
+            else None
+        )
 
         # -------------------------------------------------------------
         # STEP 4: Build JQL
         # -------------------------------------------------------------
         # --- THIS IS THE NEW, CORRECTED CODE ---
         # We now use double quotes around the date variables.
-        jql = f'updated >= "{start_date_str}" order by updated asc'
+        jql = (
+            f'updated >= "{start_date_str}" AND updated < "{end_date_str}" order by updated asc'
+            if end_date_str
+            else f'updated >= "{start_date_str}" order by updated asc'
+        )
         
         json_body = {
             "fields": "*all",  # Change this from a list to a string
