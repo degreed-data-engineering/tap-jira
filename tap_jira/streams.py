@@ -466,7 +466,6 @@ class Issues(Stream):
         )
         
         json_body = {
-            "fields": "*all",
             "jql": jql,
             "maxResults": DEFAULT_PAGE_SIZE,
         }
