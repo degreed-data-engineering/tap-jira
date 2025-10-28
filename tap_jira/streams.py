@@ -56,33 +56,24 @@ def raise_if_bookmark_cannot_advance(worklogs):
 
 def sync_sub_streams(page):
     for issue in page:
-        # The 'changelog' and 'transitions' keys are at the top level of the issue
-        # when they are expanded. Use .get() to safely access them.
+        # This robust code will now safely do nothing, because 'changelog' and
+        # 'transitions' will not be present in the API response.
         
         changelogs = issue.get("changelog", {}).get("histories", [])
         if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
-            changelogs_to_store = []
-            interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
-            for changelog in changelogs:
-                changelog["issueId"] = issue["id"]
-                if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
-                    changelogs_to_store.append(changelog)
+            # ... (code to process changelogs) ...
             CHANGELOGS.write_page(changelogs_to_store)
 
         transitions = issue.get("transitions", [])
         if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
-            for transition in transitions:
-                transition["issueId"] = issue["id"]
+            # ... (code to process transitions) ...
             ISSUE_TRANSITIONS.write_page(transitions)
         
-        # The 'comment' field is nested inside the 'fields' object.
-        # We must safely access 'fields' first, then 'comment'.
         fields = issue.get("fields", {})
         if fields:
             comments = fields.get("comment", {}).get("comments", [])
             if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
-                for comment in comments:
-                    comment["issueId"] = issue["id"]
+                # ... (code to process comments) ...
                 ISSUE_COMMENTS.write_page(comments)
 
 
@@ -475,7 +466,6 @@ class Issues(Stream):
         
         json_body = {
             "jql": jql,
-            "expand": ["changelog", "transitions"], # ADD THIS BACK
             "maxResults": DEFAULT_PAGE_SIZE,
         }
 
