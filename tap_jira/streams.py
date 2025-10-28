@@ -56,26 +56,34 @@ def raise_if_bookmark_cannot_advance(worklogs):
 
 def sync_sub_streams(page):
     for issue in page:
-        comments = issue["fields"].pop("comment")["comments"]
-        if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
-            for comment in comments:
-                comment["issueId"] = issue["id"]
-            ISSUE_COMMENTS.write_page(comments)
-        changelogs = issue.pop("changelog")["histories"]
+        # The 'changelog' and 'transitions' keys are at the top level of the issue
+        # when they are expanded. Use .get() to safely access them.
+        
+        changelogs = issue.get("changelog", {}).get("histories", [])
         if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
             changelogs_to_store = []
             interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
             for changelog in changelogs:
                 changelog["issueId"] = issue["id"]
-                # just store changelogs of which fields we are interested in
                 if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
                     changelogs_to_store.append(changelog)
             CHANGELOGS.write_page(changelogs_to_store)
-        transitions = issue.pop("transitions")
+
+        transitions = issue.get("transitions", [])
         if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
             for transition in transitions:
                 transition["issueId"] = issue["id"]
             ISSUE_TRANSITIONS.write_page(transitions)
+        
+        # The 'comment' field is nested inside the 'fields' object.
+        # We must safely access 'fields' first, then 'comment'.
+        fields = issue.get("fields", {})
+        if fields:
+            comments = fields.get("comment", {}).get("comments", [])
+            if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
+                for comment in comments:
+                    comment["issueId"] = issue["id"]
+                ISSUE_COMMENTS.write_page(comments)
 
 
 def advance_bookmark(worklogs):
@@ -467,12 +475,12 @@ class Issues(Stream):
         
         json_body = {
             "jql": jql,
+            "expand": ["changelog", "transitions"], # ADD THIS BACK
             "maxResults": DEFAULT_PAGE_SIZE,
         }
 
         # -------------------------------------------------------------
         # STEP 5: Pagination and sync
-        # --- MODIFIED: Uses the new Paginator with POST and JSON body ---
         # -------------------------------------------------------------
         pager = Paginator(Context.client, items_key="issues")
 
@@ -483,12 +491,23 @@ class Issues(Stream):
 
             sync_sub_streams(page)
 
+            
+            # Now we must safely access the 'fields' key before trying to pop things from it.
             for issue in page:
-                issue["fields"].pop("worklog", None)
-                issue["fields"].pop("operations", None)
-
-            if not page[-1]["fields"].get("updated"):
+                fields = issue.get("fields", {})
+                if fields:
+                    fields.pop("worklog", None)
+                    fields.pop("operations", None)
+                    fields.pop("comment", None) # Pop comment here after it has been processed
+            
+            # Safely get the 'updated' timestamp for the bookmark
+            last_issue_fields = page[-1].get("fields", {})
+            if not last_issue_fields.get("updated"):
+                # If the last record has no updated field, we cannot advance the bookmark from it.
+                # It's safer to just continue and not write the state for this page.
+                self.write_page(page)
                 continue
+            
 
             # We still track the latest 'updated' timestamp from the records we process.
             last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
