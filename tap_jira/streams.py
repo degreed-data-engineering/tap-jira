@@ -506,7 +506,7 @@ class Issues(Stream):
         pager = Paginator(Context.client, items_key="issues")
 
         # Make a POST request, passing the json_body. The Paginator will handle adding the `nextPageToken`.
-         for page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=json_body):
+        for page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=json_body):
             if not page:
                 continue
 
