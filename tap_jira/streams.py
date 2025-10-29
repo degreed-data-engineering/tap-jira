@@ -58,7 +58,7 @@ def sync_sub_streams(page):
     enriched_issues = []
     
     # Add a counter to see how many issues we are processing
-    LOGGER.info(f"--- Enriching a page of {len(page)} issues ---")
+    # LOGGER.info(f"--- Enriching a page of {len(page)} issues ---")
 
     for i, issue in enumerate(page):
         try:
@@ -69,13 +69,13 @@ def sync_sub_streams(page):
 
             # --- DIAGNOSTIC STEP 1: Check if 'expand' is working ---
             # This is the most important log. Does the response even contain the 'changelog' key?
-            LOGGER.info(f"Issue {issue['id']} (item {i+1}/{len(page)}): Full details received. Keys are: {list(full_issue_details.keys())}")
+            #LOGGER.info(f"Issue {issue['id']} (item {i+1}/{len(page)}): Full details received. Keys are: {list(full_issue_details.keys())}")
 
             changelogs = full_issue_details.get("changelog", {}).get("histories", [])
             
             # --- DIAGNOSTICS STEP 2: Check if we found any changelogs at all ---
             if changelogs:
-                LOGGER.info(f"Issue {issue['id']}: Found {len(changelogs)} total changelog entries.")
+                # LOGGER.info(f"Issue {issue['id']}: Found {len(changelogs)} total changelog entries.")
                 
                 changelogs_to_store = []
                 interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
@@ -85,15 +85,15 @@ def sync_sub_streams(page):
                     
                     # --- DIAGNOSTIC STEP 3: See the exact fields being changed ---
                     changed_fields = [item.get("field") for item in changelog.get("items", [])]
-                    LOGGER.info(f"Issue {issue['id']}, Changelog ID {changelog['id']}: Fields changed are: {changed_fields}")
+                    # LOGGER.info(f"Issue {issue['id']}, Changelog ID {changelog['id']}: Fields changed are: {changed_fields}")
 
                     if any(field in interested_changelog_fields for field in changed_fields):
-                        LOGGER.info(f"  ^^^ MATCH FOUND! Storing this changelog.")
+                        # LOGGER.info(f"  ^^^ MATCH FOUND! Storing this changelog.")
                         changelogs_to_store.append(changelog)
 
                 if changelogs_to_store:
                     CHANGELOGS.write_page(changelogs_to_store)
-                    LOGGER.info(f"Issue {issue['id']}: Wrote {len(changelogs_to_store)} matching changelogs to the stream.")
+                    # LOGGER.info(f"Issue {issue['id']}: Wrote {len(changelogs_to_store)} matching changelogs to the stream.")
             else:
                 LOGGER.info(f"Issue {issue['id']}: No changelogs found in the expanded details.")
 
