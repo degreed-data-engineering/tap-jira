@@ -55,26 +55,57 @@ def raise_if_bookmark_cannot_advance(worklogs):
 
 
 def sync_sub_streams(page):
+    # This list will hold the fully detailed issue objects after enrichment.
+    enriched_issues = []
+    
     for issue in page:
-        # This robust code will now safely do nothing, because 'changelog' and
-        # 'transitions' will not be present in the API response.
-        
-        changelogs = issue.get("changelog", {}).get("histories", [])
-        if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
-            # ... (code to process changelogs) ...
-            CHANGELOGS.write_page(changelogs_to_store)
+        try:
+            
+            # For each basic issue from the list, fetch its full details.
+            # This call uses the GET /issue/{issueId} endpoint, which supports expand.
+            full_issue_details = Context.client.fetch_issue_details(
+                issue['id'], 
+                expand="changelog,transitions"
+            )
+            
 
-        transitions = issue.get("transitions", [])
-        if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
-            # ... (code to process transitions) ...
-            ISSUE_TRANSITIONS.write_page(transitions)
-        
-        fields = issue.get("fields", {})
-        if fields:
-            comments = fields.get("comment", {}).get("comments", [])
-            if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
-                # ... (code to process comments) ...
-                ISSUE_COMMENTS.write_page(comments)
+            # Now, we process the sub-streams from the *full, detailed* object.
+            changelogs = full_issue_details.get("changelog", {}).get("histories", [])
+            if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
+                changelogs_to_store = []
+                interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
+                for changelog in changelogs:
+                    changelog["issueId"] = full_issue_details["id"]
+                    if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
+                        changelogs_to_store.append(changelog)
+                CHANGELOGS.write_page(changelogs_to_store)
+
+            transitions = full_issue_details.get("transitions", [])
+            if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
+                for transition in transitions:
+                    transition["issueId"] = full_issue_details["id"]
+                ISSUE_TRANSITIONS.write_page(transitions)
+            
+            # The 'comment' is nested in 'fields' of the full object.
+            fields = full_issue_details.get("fields", {})
+            if fields:
+                comments = fields.get("comment", {}).get("comments", [])
+                if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
+                    for comment in comments:
+                        comment["issueId"] = full_issue_details["id"]
+                    ISSUE_COMMENTS.write_page(comments)
+
+            # Add the fully detailed issue to our list to be written later.
+            enriched_issues.append(full_issue_details)
+
+        except JiraNotFoundError:
+            # It's possible an issue was deleted between the list and detail calls.
+            # We can safely log and skip it.
+            LOGGER.warning(f"Could not fetch details for issue {issue['id']}; it may have been deleted.")
+            continue
+            
+    # Return the list of fully enriched issues.
+    return enriched_issues
 
 
 def advance_bookmark(worklogs):
@@ -475,33 +506,36 @@ class Issues(Stream):
         pager = Paginator(Context.client, items_key="issues")
 
         # Make a POST request, passing the json_body. The Paginator will handle adding the `nextPageToken`.
-        for page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=json_body):
+         for page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=json_body):
             if not page:
                 continue
 
-            sync_sub_streams(page)
-
+            # Call our new function. It will handle the sub-streams AND
+            # return the list of full, enriched issue objects.
+            enriched_page = sync_sub_streams(page)
             
-            # Now we must safely access the 'fields' key before trying to pop things from it.
-            for issue in page:
+            # If for some reason all issues on a page were deleted and the enriched page is empty, skip.
+            if not enriched_page:
+                continue
+
+            # logic to pop fields from the full issue records before writing them.
+            for issue in enriched_page:
                 fields = issue.get("fields", {})
                 if fields:
                     fields.pop("worklog", None)
                     fields.pop("operations", None)
-                    fields.pop("comment", None) # Pop comment here after it has been processed
-            
-            # Safely get the 'updated' timestamp for the bookmark
-            last_issue_fields = page[-1].get("fields", {})
-            if not last_issue_fields.get("updated"):
-                # If the last record has no updated field, we cannot advance the bookmark from it.
-                # It's safer to just continue and not write the state for this page.
-                self.write_page(page)
-                continue
-            
+                    fields.pop("comment", None) # Pop comment after processing
 
-            # We still track the latest 'updated' timestamp from the records we process.
-            last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
-            self.write_page(page)
+            # Safely get the 'updated' timestamp from the last full record.
+            last_issue_fields = enriched_page[-1].get("fields", {})
+            if not last_issue_fields.get("updated"):
+                self.write_page(enriched_page)
+                continue
+
+            last_updated = utils.strptime_to_utc(last_issue_fields["updated"])
+            
+            # Write the page of FULL, enriched issue records.
+            self.write_page(enriched_page)
 
             # We no longer write state inside the loop.
 
