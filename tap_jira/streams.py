@@ -468,7 +468,7 @@ class Issues(Stream):
             "jql": jql,
             "maxResults": DEFAULT_PAGE_SIZE,
         }
-
+        LOGGER.info(f"Fetching issues with JQL: {jql}")
         # -------------------------------------------------------------
         # STEP 5: Pagination and sync
         # -------------------------------------------------------------
