@@ -266,8 +266,8 @@ class Client():
         if wait > 0:
             time.sleep(wait)
         # --- ADD THIS DEBUGGING BLOCK ---
-        if 'json' in kwargs:
-            LOGGER.info(f"JIRA REQUEST PAYLOAD for '{path}': {json.dumps(kwargs['json'])}")
+        # if 'json' in kwargs:
+        #    LOGGER.info(f"JIRA REQUEST PAYLOAD for '{path}': {json.dumps(kwargs['json'])}")
         # --- END DEBUGGING BLOCK ---    
         with metrics.http_request_timer(tap_stream_id) as timer:
             response = self.send(method, path, **kwargs)
