@@ -55,38 +55,55 @@ def raise_if_bookmark_cannot_advance(worklogs):
 
 
 def sync_sub_streams(page):
-    # This list will hold the fully detailed issue objects after enrichment.
     enriched_issues = []
     
-    for issue in page:
+    # Add a counter to see how many issues we are processing
+    LOGGER.info(f"--- Enriching a page of {len(page)} issues ---")
+
+    for i, issue in enumerate(page):
         try:
-            
-            # For each basic issue from the list, fetch its full details.
-            # This call uses the GET /issue/{issueId} endpoint, which supports expand.
             full_issue_details = Context.client.fetch_issue_details(
                 issue['id'], 
                 expand="changelog,transitions"
             )
-            
 
-            # Now, we process the sub-streams from the *full, detailed* object.
+            # --- DIAGNOSTIC STEP 1: Check if 'expand' is working ---
+            # This is the most important log. Does the response even contain the 'changelog' key?
+            LOGGER.info(f"Issue {issue['id']} (item {i+1}/{len(page)}): Full details received. Keys are: {list(full_issue_details.keys())}")
+
             changelogs = full_issue_details.get("changelog", {}).get("histories", [])
-            if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
+            
+            # --- DIAGNOSTICS STEP 2: Check if we found any changelogs at all ---
+            if changelogs:
+                LOGGER.info(f"Issue {issue['id']}: Found {len(changelogs)} total changelog entries.")
+                
                 changelogs_to_store = []
                 interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
+
                 for changelog in changelogs:
                     changelog["issueId"] = full_issue_details["id"]
-                    if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
-                        changelogs_to_store.append(changelog)
-                CHANGELOGS.write_page(changelogs_to_store)
+                    
+                    # --- DIAGNOSTIC STEP 3: See the exact fields being changed ---
+                    changed_fields = [item.get("field") for item in changelog.get("items", [])]
+                    LOGGER.info(f"Issue {issue['id']}, Changelog ID {changelog['id']}: Fields changed are: {changed_fields}")
 
+                    if any(field in interested_changelog_fields for field in changed_fields):
+                        LOGGER.info(f"  ^^^ MATCH FOUND! Storing this changelog.")
+                        changelogs_to_store.append(changelog)
+
+                if changelogs_to_store:
+                    CHANGELOGS.write_page(changelogs_to_store)
+                    LOGGER.info(f"Issue {issue['id']}: Wrote {len(changelogs_to_store)} matching changelogs to the stream.")
+            else:
+                LOGGER.info(f"Issue {issue['id']}: No changelogs found in the expanded details.")
+
+            # (The rest of the function for transitions, comments, etc. remains the same)
             transitions = full_issue_details.get("transitions", [])
             if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
                 for transition in transitions:
                     transition["issueId"] = full_issue_details["id"]
                 ISSUE_TRANSITIONS.write_page(transitions)
             
-            # The 'comment' is nested in 'fields' of the full object.
             fields = full_issue_details.get("fields", {})
             if fields:
                 comments = fields.get("comment", {}).get("comments", [])
@@ -95,16 +112,13 @@ def sync_sub_streams(page):
                         comment["issueId"] = full_issue_details["id"]
                     ISSUE_COMMENTS.write_page(comments)
 
-            # Add the fully detailed issue to our list to be written later.
             enriched_issues.append(full_issue_details)
 
-        except JiraNotFoundError:
-            # It's possible an issue was deleted between the list and detail calls.
-            # We can safely log and skip it.
-            LOGGER.warning(f"Could not fetch details for issue {issue['id']}; it may have been deleted.")
+        except Exception as e:
+            # --- DIAGNOSTIC STEP 4: Catch ALL exceptions to see if something else is failing ---
+            LOGGER.error(f"!!! An unexpected error occurred while enriching issue {issue['id']}: {e}", exc_info=True)
             continue
             
-    # Return the list of fully enriched issues.
     return enriched_issues
 
 
