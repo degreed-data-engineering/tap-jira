@@ -405,7 +405,7 @@ class Users(Stream):
 class Issues(Stream):
     def sync(self):
         updated_bookmark_key = [self.tap_stream_id, "updated"]
-        page_num_offset = [self.tap_stream_id, "offset", "page_num"] # Kept for cleanup
+        page_num_offset = [self.tap_stream_id, "offset", "page_num"]
 
         if os.getenv("LOCAL_STATE_DEBUG", "false").lower() == "true":
             state_path = os.getenv("TAP_JIRA_STATE_PATH", "jira.json")
@@ -413,92 +413,61 @@ class Issues(Stream):
                 try:
                     with open(state_path, "r") as f:
                         state_data = json.load(f)
-                        bookmarks = (
-                            state_data.get("completed", {})
-                            .get("singer_state", {})
-                            .get("bookmarks", {})
-                        )
+                        bookmarks = (state_data.get("completed", {}).get("singer_state", {}).get("bookmarks", {}))
                         if bookmarks and "issues" in bookmarks and "updated" in bookmarks["issues"]:
                             state_val = bookmarks["issues"]["updated"]
                             Context.set_bookmark(updated_bookmark_key, state_val)
-                            # Also update the main context state object directly
                             if "bookmarks" not in Context.state: Context.state["bookmarks"] = {}
                             if "issues" not in Context.state["bookmarks"]: Context.state["bookmarks"]["issues"] = {}
                             Context.state["bookmarks"]["issues"]["updated"] = state_val
-                            LOGGER.info(f"--- LOCAL DEBUG: State overridden from {state_path} to {state_val} ---")
-                except Exception as e:
-                    LOGGER.warning(f"--- LOCAL DEBUG: Could not load state from {state_path}. Error: {e} ---")
-        
-        # --- START: YOUR ROBUST DATE RESOLUTION LOGIC ---
-        # This is the correct, well-logged logic for determining the start date.
+                except Exception:
+                    # Silently ignore local debug errors
+                    pass
+
         last_updated = None
-        source_used = None
         
         env_start_date = os.getenv("TAP_JIRA_START_DATE")
         if env_start_date and env_start_date.strip():
-            LOGGER.info(f"Found non-empty TAP_JIRA_START_DATE: '{env_start_date}'")
             try:
                 last_updated = utils.strptime_to_utc(env_start_date)
-                source_used = f"ENVIRONMENT VARIABLE ({env_start_date})"
-            except Exception as e:
-                LOGGER.warning(f"Could not parse TAP_JIRA_START_DATE. Error: {e}")
-        else:
-            LOGGER.info("TAP_JIRA_START_DATE is missing or empty. Checking for state.")
+            except Exception:
+                pass # Silently ignore parse errors
 
         if not last_updated:
             state_value = None
             if isinstance(Context.state, dict):
                 state_value = Context.state.get("bookmarks", {}).get("issues", {}).get("updated")
                 if not state_value:
-                    nested_val = (Context.state.get("completed", {})
-                                  .get("singer_state", {})
-                                  .get("bookmarks", {})
-                                  .get("issues", {})
-                                  .get("updated"))
+                    nested_val = (Context.state.get("completed", {}).get("singer_state", {}).get("bookmarks", {}).get("issues", {}).get("updated"))
                     if nested_val:
                         state_value = nested_val
             
             if state_value:
-                LOGGER.info(f"Found bookmark in state file: '{state_value}'")
                 try:
                     last_updated = utils.strptime_to_utc(state_value)
-                    source_used = f"STATE FILE ({state_value})"
-                except Exception as e:
-                    LOGGER.warning(f"Could not parse state bookmark. Error: {e}.")
-            else:
-                LOGGER.info("No bookmark found in state. Checking config.")
+                except Exception:
+                    pass # Silently ignore parse errors
 
         if not last_updated:
             config_date = Context.config.get("start_date")
             if config_date:
-                LOGGER.info(f"Found start_date in config: '{config_date}'")
                 try:
                     last_updated = utils.strptime_to_utc(config_date)
-                    source_used = f"MELTANO.YML CONFIG ({config_date})"
-                except Exception as e:
-                    LOGGER.warning(f"Could not parse start_date from config. Error: {e}.")
-            else:
-                LOGGER.info("No start_date found in config.")
+                except Exception:
+                    pass # Silently ignore parse errors
 
         if not last_updated:
-            fallback_date = "2021--01-01T00:00:00Z"
-            LOGGER.warning(f"No valid start_date found. Using default fallback: {fallback_date}")
+            fallback_date = "2021-01-01T00:00:00Z"
             last_updated = utils.strptime_to_utc(fallback_date)
-            source_used = "DEFAULT FALLBACK"
-        
-        LOGGER.info(f"🏁 Final start_date resolved from: {source_used} -> {last_updated.isoformat()}")
         
         end_date = None
         env_end_date = os.getenv("TAP_JIRA_END_DATE")
         if env_end_date:
             try:
                 end_date = utils.strptime_to_utc(env_end_date)
-                LOGGER.info(f"Using end_date from environment: {env_end_date}")
-            except Exception as e:
-                LOGGER.warning(f"Could not parse TAP_JIRA_END_DATE: {e}")
-        # --- END: DATE RESOLUTION LOGIC ---
+            except Exception:
+                pass # Silently ignore parse errors
 
-        # --- FINAL WORKING JQL AND PAYLOAD LOGIC ---
         timezone = Context.retrieve_timezone()
         start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
         end_date_str = (
@@ -513,15 +482,15 @@ class Issues(Stream):
             else f'updated >= "{start_date_str}" order by updated asc'
         )
         
-        # This is the minimal, correct payload. It does NOT include 'expand'.
+        # This single log line is highly recommended to keep for operational visibility
+        LOGGER.info(f"Syncing issues with JQL: {jql}")
+
         json_body = {
             "jql": jql,
             "maxResults": DEFAULT_PAGE_SIZE,
         }
         
         pager = Paginator(Context.client, items_key="issues")
-
-        # Keep a running max timestamp for the bookmark
         current_max_updated = last_updated
 
         for page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=json_body):
@@ -540,7 +509,6 @@ class Issues(Stream):
                     fields.pop("operations", None)
                     fields.pop("comment", None)
 
-            # Update the running max timestamp from the latest record on the page
             if enriched_page[-1].get("fields", {}).get("updated"):
                 page_max_updated = utils.strptime_to_utc(enriched_page[-1]["fields"]["updated"])
                 if page_max_updated > current_max_updated:
@@ -548,15 +516,12 @@ class Issues(Stream):
             
             self.write_page(enriched_page)
             
-            # Write state after each successful page to be resilient
             Context.set_bookmark(updated_bookmark_key, current_max_updated)
             singer.write_state(Context.state)
 
-        # Final state write for cleanliness
-        Context.set_bookmark(page_num_offset, None) # Cleanup old bookmark
+        Context.set_bookmark(page_num_offset, None)
         Context.set_bookmark(updated_bookmark_key, current_max_updated)
         singer.write_state(Context.state)
-        LOGGER.info(f"🏁 Final bookmark for 'issues' is set to: {current_max_updated.isoformat()}")
 
 
 
