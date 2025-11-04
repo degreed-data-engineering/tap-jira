@@ -405,7 +405,7 @@ class Users(Stream):
 class Issues(Stream):
     def sync(self):
         updated_bookmark_key = [self.tap_stream_id, "updated"]
-        page_num_offset = [self.tap_stream_id, "offset", "page_num"]
+        page_num_offset = [self.tap_stream_id, "offset", "page_num"] # Kept for cleanup
 
         if os.getenv("LOCAL_STATE_DEBUG", "false").lower() == "true":
             state_path = os.getenv("TAP_JIRA_STATE_PATH", "jira.json")
@@ -421,17 +421,16 @@ class Issues(Stream):
                             if "issues" not in Context.state["bookmarks"]: Context.state["bookmarks"]["issues"] = {}
                             Context.state["bookmarks"]["issues"]["updated"] = state_val
                 except Exception:
-                    # Silently ignore local debug errors
-                    pass
-
+                    pass # Silently ignore local debug errors
+       
         last_updated = None
         
-        env_start_date = os.getenv("TAP_JIRA_START_DATE")
-        if env_start_date and env_start_date.strip():
+        env_start_date = os.getenv("TAP_JIRA_START_DATE", "").strip()
+        if env_start_date:
             try:
                 last_updated = utils.strptime_to_utc(env_start_date)
             except Exception:
-                pass # Silently ignore parse errors
+                pass
 
         if not last_updated:
             state_value = None
@@ -444,17 +443,17 @@ class Issues(Stream):
             
             if state_value:
                 try:
-                    last_updated = utils.strptime_to_utc(state_value)
+                    last_updated = utils.strptime_to_utc(str(state_value))
                 except Exception:
-                    pass # Silently ignore parse errors
+                    pass
 
         if not last_updated:
             config_date = Context.config.get("start_date")
             if config_date:
                 try:
-                    last_updated = utils.strptime_to_utc(config_date)
+                    last_updated = utils.strptime_to_utc(str(config_date))
                 except Exception:
-                    pass # Silently ignore parse errors
+                    pass
 
         if not last_updated:
             fallback_date = "2021-01-01T00:00:00Z"
@@ -466,8 +465,9 @@ class Issues(Stream):
             try:
                 end_date = utils.strptime_to_utc(env_end_date)
             except Exception:
-                pass # Silently ignore parse errors
+                pass
 
+        
         timezone = Context.retrieve_timezone()
         start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
         end_date_str = (
@@ -482,7 +482,6 @@ class Issues(Stream):
             else f'updated >= "{start_date_str}" order by updated asc'
         )
         
-        # This single log line is highly recommended to keep for operational visibility
         LOGGER.info(f"Syncing issues with JQL: {jql}")
 
         json_body = {
