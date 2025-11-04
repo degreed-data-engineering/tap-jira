@@ -524,7 +524,6 @@ class Issues(Stream):
         singer.write_state(Context.state)
 
 
-
 class Worklogs(Stream):
     def _fetch_ids(self, last_updated):
         # since_ts uses millisecond precision
