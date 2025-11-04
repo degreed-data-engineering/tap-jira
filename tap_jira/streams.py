@@ -407,7 +407,6 @@ class Issues(Stream):
         updated_bookmark_key = [self.tap_stream_id, "updated"]
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
 
-        # --- LOCAL DEBUGGING BLOCK ---
         if os.getenv("LOCAL_STATE_DEBUG", "false").lower() == "true":
             state_path = os.getenv("TAP_JIRA_STATE_PATH", "jira.json")
             if os.path.exists(state_path):
@@ -425,54 +424,42 @@ class Issues(Stream):
                     # Silently ignore local debug errors
                     pass
 
-        # --- START: FINAL DATE RESOLUTION LOGIC (SILENCED) ---
         last_updated = None
-        source_used = "UNKNOWN"
         
-        # 1. Prioritize Environment Variable
-        env_start_date = os.getenv("TAP_JIRA_START_DATE", "").strip()
-        if env_start_date:
+        env_start_date = os.getenv("TAP_JIRA_START_DATE")
+        if env_start_date and env_start_date.strip():
             try:
                 last_updated = utils.strptime_to_utc(env_start_date)
-                source_used = f"ENVIRONMENT VARIABLE ({env_start_date})"
             except Exception:
                 pass # Silently ignore parse errors
 
-        # 2. Fallback to State File (with the correct path)
         if not last_updated:
             state_value = None
             if isinstance(Context.state, dict):
-                state_value = (Context.state.get("completed", {})
-                               .get("singer_state", {})
-                               .get("bookmarks", {})
-                               .get("issues", {})
-                               .get("updated"))
+                state_value = Context.state.get("bookmarks", {}).get("issues", {}).get("updated")
+                if not state_value:
+                    nested_val = (Context.state.get("completed", {}).get("singer_state", {}).get("bookmarks", {}).get("issues", {}).get("updated"))
+                    if nested_val:
+                        state_value = nested_val
             
             if state_value:
                 try:
-                    last_updated = utils.strptime_to_utc(str(state_value))
-                    source_used = f"STATE FILE ({state_value})"
+                    last_updated = utils.strptime_to_utc(state_value)
                 except Exception:
                     pass # Silently ignore parse errors
 
-        # 3. Fallback to Meltano Config
         if not last_updated:
             config_date = Context.config.get("start_date")
             if config_date:
                 try:
-                    last_updated = utils.strptime_to_utc(str(config_date))
-                    source_used = f"MELTANO.YML CONFIG ({config_date})"
+                    last_updated = utils.strptime_to_utc(config_date)
                 except Exception:
                     pass # Silently ignore parse errors
 
-        # 4. Final Fallback to Hardcoded Default
         if not last_updated:
             fallback_date = "2021-01-01T00:00:00Z"
             last_updated = utils.strptime_to_utc(fallback_date)
-            source_used = "DEFAULT FALLBACK"
         
-        
-
         end_date = None
         env_end_date = os.getenv("TAP_JIRA_END_DATE")
         if env_end_date:
@@ -480,8 +467,7 @@ class Issues(Stream):
                 end_date = utils.strptime_to_utc(env_end_date)
             except Exception:
                 pass # Silently ignore parse errors
-        
-        
+
         timezone = Context.retrieve_timezone()
         start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
         end_date_str = (
@@ -496,7 +482,8 @@ class Issues(Stream):
             else f'updated >= "{start_date_str}" order by updated asc'
         )
         
-        LOGGER.info(f"Syncing issues with JQL: {jql} (Source: {source_used})")
+        # This single log line is highly recommended to keep for operational visibility
+        LOGGER.info(f"Syncing issues with JQL: {jql}")
 
         json_body = {
             "jql": jql,
@@ -534,7 +521,8 @@ class Issues(Stream):
 
         Context.set_bookmark(page_num_offset, None)
         Context.set_bookmark(updated_bookmark_key, current_max_updated)
-        LOGGER.info(f"Sync complete. Final bookmark for 'issues' is set to: {current_max_updated.isoformat()}")
+        singer.write_state(Context.state)
+
 
 
 class Worklogs(Stream):
