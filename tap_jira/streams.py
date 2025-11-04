@@ -471,7 +471,7 @@ class Issues(Stream):
             last_updated = utils.strptime_to_utc(fallback_date)
             source_used = "DEFAULT FALLBACK"
         
-        # --- END: DATE RESOLUTION LOGIC ---
+        
 
         end_date = None
         env_end_date = os.getenv("TAP_JIRA_END_DATE")
@@ -481,9 +481,9 @@ class Issues(Stream):
             except Exception:
                 pass # Silently ignore parse errors
         
-        # --- The rest of the sync method is correct and unchanged ---
+        
         timezone = Context.retrieve_timezone()
-        start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y--%m-%d %H:%M")
+        start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
         end_date_str = (
             end_date.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
             if end_date
