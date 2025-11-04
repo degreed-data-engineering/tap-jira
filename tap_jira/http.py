@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import time
 import threading
 import re
+import json 
 from requests.exceptions import (HTTPError, Timeout)
 from requests.auth import HTTPBasicAuth
 import requests
@@ -264,6 +265,10 @@ class Client():
         wait = (self.next_request_at - datetime.now()).total_seconds()
         if wait > 0:
             time.sleep(wait)
+        # --- ADD THIS DEBUGGING BLOCK ---
+        # if 'json' in kwargs:
+        #    LOGGER.info(f"JIRA REQUEST PAYLOAD for '{path}': {json.dumps(kwargs['json'])}")
+        # --- END DEBUGGING BLOCK ---    
         with metrics.http_request_timer(tap_stream_id) as timer:
             response = self.send(method, path, **kwargs)
             self.next_request_at = datetime.now() + TIME_BETWEEN_REQUESTS
@@ -327,46 +332,41 @@ class Client():
         # Assign True value to is_on_prem_instance property for on-prem Jira instance
         self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
 
+# In your http.py file
+
 class Paginator():
-    def __init__(self, client, page_num=0, order_by=None, items_key="values"):
+    def __init__(self, client, items_key="values"):
         self.client = client
-        self.next_page_num = page_num
-        self.order_by = order_by
         self.items_key = items_key
+        # Start with a sentinel value to run the loop once.
+        self.next_page_token = ""
 
     def pages(self, *args, **kwargs):
-        """Returns a generator which yields pages of data."""
+        """
+        Returns a generator which yields pages of data using token-based pagination.
+        This method expects to receive a 'json' dictionary in kwargs for the initial request.
+        """
+        # Make a copy of the initial request body.
+        json_body = kwargs.pop("json", {}).copy()
 
-        params = kwargs.pop("params", {}).copy()
-        while self.next_page_num is not None:
-            # Always ensure defaults
-            params.setdefault("maxResults", 50)
-            params["startAt"] = self.next_page_num
-            if self.order_by:
-                params["orderBy"] = self.order_by
+        while self.next_page_token is not None:
+            # For subsequent requests, add the token to the existing payload.
+            # DO NOT create a new payload. The API needs the original JQL context.
+            if self.next_page_token: # Only add it if it's not the empty-string first run
+                json_body["nextPageToken"] = self.next_page_token
+            
+            # For the first run, ensure no old token is present
+            elif "nextPageToken" in json_body:
+                del json_body["nextPageToken"]
 
-            # ✅ Add log line to trace pagination
-            # LOGGER.info(f"Fetching Jira page: startAt={params['startAt']}, maxResults={params['maxResults']}")
+            response = self.client.request(*args, json=json_body, **kwargs)
 
-            response = self.client.request(*args, params=params, **kwargs)
-
-            if self.items_key:
-                page = response.get(self.items_key, [])
-            else:
-                page = response
-
-            max_results = response.get("maxResults", params["maxResults"])
-            total = response.get("total", "unknown")
-            # LOGGER.info(f"Got {len(page)} records (of total={total}) from Jira response")
-
-            if len(page) < max_results:
-                # LOGGER.info("No more pages remaining — stopping pagination.")
-                self.next_page_num = None
-            else:
-                self.next_page_num += max_results
-                # LOGGER.info(f"Next page will startAt={self.next_page_num}")
+            page = response.get(self.items_key, [])
+            
+            is_last = response.get("isLast", True)
+            
+            # Get the token for the next iteration.
+            self.next_page_token = response.get("nextPageToken") if not is_last else None
 
             if page:
-                # LOGGER.info(f"Yielded page with {len(page)} records; continuing...")
                 yield page
-

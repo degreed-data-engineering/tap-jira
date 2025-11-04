@@ -55,27 +55,71 @@ def raise_if_bookmark_cannot_advance(worklogs):
 
 
 def sync_sub_streams(page):
-    for issue in page:
-        comments = issue["fields"].pop("comment")["comments"]
-        if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
-            for comment in comments:
-                comment["issueId"] = issue["id"]
-            ISSUE_COMMENTS.write_page(comments)
-        changelogs = issue.pop("changelog")["histories"]
-        if changelogs and Context.is_selected(CHANGELOGS.tap_stream_id):
-            changelogs_to_store = []
-            interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
-            for changelog in changelogs:
-                changelog["issueId"] = issue["id"]
-                # just store changelogs of which fields we are interested in
-                if len([item for item in changelog["items"] if item.get("field") in interested_changelog_fields]) > 0:
-                    changelogs_to_store.append(changelog)
-            CHANGELOGS.write_page(changelogs_to_store)
-        transitions = issue.pop("transitions")
-        if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
-            for transition in transitions:
-                transition["issueId"] = issue["id"]
-            ISSUE_TRANSITIONS.write_page(transitions)
+    enriched_issues = []
+    
+    # Add a counter to see how many issues we are processing
+    # LOGGER.info(f"--- Enriching a page of {len(page)} issues ---")
+
+    for i, issue in enumerate(page):
+        try:
+            full_issue_details = Context.client.fetch_issue_details(
+                issue['id'], 
+                expand="changelog,transitions"
+            )
+
+            # --- DIAGNOSTIC STEP 1: Check if 'expand' is working ---
+            # This is the most important log. Does the response even contain the 'changelog' key?
+            #LOGGER.info(f"Issue {issue['id']} (item {i+1}/{len(page)}): Full details received. Keys are: {list(full_issue_details.keys())}")
+
+            changelogs = full_issue_details.get("changelog", {}).get("histories", [])
+            
+            # --- DIAGNOSTICS STEP 2: Check if we found any changelogs at all ---
+            if changelogs:
+                # LOGGER.info(f"Issue {issue['id']}: Found {len(changelogs)} total changelog entries.")
+                
+                changelogs_to_store = []
+                interested_changelog_fields = set(["status", "priority", "CX Bug Escalation"])
+
+                for changelog in changelogs:
+                    changelog["issueId"] = full_issue_details["id"]
+                    
+                    # --- DIAGNOSTIC STEP 3: See the exact fields being changed ---
+                    changed_fields = [item.get("field") for item in changelog.get("items", [])]
+                    # LOGGER.info(f"Issue {issue['id']}, Changelog ID {changelog['id']}: Fields changed are: {changed_fields}")
+
+                    if any(field in interested_changelog_fields for field in changed_fields):
+                        # LOGGER.info(f"  ^^^ MATCH FOUND! Storing this changelog.")
+                        changelogs_to_store.append(changelog)
+
+                if changelogs_to_store:
+                    CHANGELOGS.write_page(changelogs_to_store)
+                    # LOGGER.info(f"Issue {issue['id']}: Wrote {len(changelogs_to_store)} matching changelogs to the stream.")
+            else:
+                LOGGER.info(f"Issue {issue['id']}: No changelogs found in the expanded details.")
+
+            # (The rest of the function for transitions, comments, etc. remains the same)
+            transitions = full_issue_details.get("transitions", [])
+            if transitions and Context.is_selected(ISSUE_TRANSITIONS.tap_stream_id):
+                for transition in transitions:
+                    transition["issueId"] = full_issue_details["id"]
+                ISSUE_TRANSITIONS.write_page(transitions)
+            
+            fields = full_issue_details.get("fields", {})
+            if fields:
+                comments = fields.get("comment", {}).get("comments", [])
+                if comments and Context.is_selected(ISSUE_COMMENTS.tap_stream_id):
+                    for comment in comments:
+                        comment["issueId"] = full_issue_details["id"]
+                    ISSUE_COMMENTS.write_page(comments)
+
+            enriched_issues.append(full_issue_details)
+
+        except Exception as e:
+            # --- DIAGNOSTIC STEP 4: Catch ALL exceptions to see if something else is failing ---
+            LOGGER.error(f"!!! An unexpected error occurred while enriching issue {issue['id']}: {e}", exc_info=True)
+            continue
+            
+    return enriched_issues
 
 
 def advance_bookmark(worklogs):
@@ -360,92 +404,70 @@ class Users(Stream):
 
 class Issues(Stream):
     def sync(self):
-        updated_bookmark = [self.tap_stream_id, "updated"]
+        updated_bookmark_key = [self.tap_stream_id, "updated"]
         page_num_offset = [self.tap_stream_id, "offset", "page_num"]
 
-        # -------------------------------------------------------------
-        # 🧩 Optional local testing override: manually load state file
-        # -------------------------------------------------------------
         if os.getenv("LOCAL_STATE_DEBUG", "false").lower() == "true":
             state_path = os.getenv("TAP_JIRA_STATE_PATH", "jira.json")
             if os.path.exists(state_path):
                 try:
                     with open(state_path, "r") as f:
                         state_data = json.load(f)
-                        bookmarks = (
-                            state_data.get("completed", {})
-                            .get("singer_state", {})
-                            .get("bookmarks", {})
-                        )
+                        bookmarks = (state_data.get("completed", {}).get("singer_state", {}).get("bookmarks", {}))
                         if bookmarks and "issues" in bookmarks and "updated" in bookmarks["issues"]:
                             state_val = bookmarks["issues"]["updated"]
-                            Context.set_bookmark(updated_bookmark, state_val)
+                            Context.set_bookmark(updated_bookmark_key, state_val)
+                            if "bookmarks" not in Context.state: Context.state["bookmarks"] = {}
+                            if "issues" not in Context.state["bookmarks"]: Context.state["bookmarks"]["issues"] = {}
                             Context.state["bookmarks"]["issues"]["updated"] = state_val
-                except Exception as e:
-                    # Silently ignore errors during local debug state loading
+                except Exception:
+                    # Silently ignore local debug errors
                     pass
 
-        # -------------------------------------------------------------
-        # STEP 1: Resolve start_date (priority: env > state > config)
-        # -------------------------------------------------------------
         last_updated = None
-        source_used = None
-
-        env_start_date = os.getenv("TAP_JIRA_START_DATE") or os.getenv("tapJiraStartDate")
-
-        if env_start_date is not None and not env_start_date.strip():
-            env_start_date = None
-
-        if env_start_date:
+        
+        env_start_date = os.getenv("TAP_JIRA_START_DATE")
+        if env_start_date and env_start_date.strip():
             try:
-                last_updated = utils.strptime_to_utc(env_start_date.strip())
-                source_used = f"ENV VAR ({env_start_date})"
+                last_updated = utils.strptime_to_utc(env_start_date)
             except Exception:
-                pass
+                pass # Silently ignore parse errors
 
         if not last_updated:
-            state_value = Context.bookmark(updated_bookmark)
+            state_value = None
+            if isinstance(Context.state, dict):
+                state_value = Context.state.get("bookmarks", {}).get("issues", {}).get("updated")
+                if not state_value:
+                    nested_val = (Context.state.get("completed", {}).get("singer_state", {}).get("bookmarks", {}).get("issues", {}).get("updated"))
+                    if nested_val:
+                        state_value = nested_val
+            
             if state_value:
                 try:
-                    last_updated = utils.strptime_to_utc(str(state_value).strip())
-                    source_used = f"STATE ({state_value})"
+                    last_updated = utils.strptime_to_utc(state_value)
                 except Exception:
-                    pass
+                    pass # Silently ignore parse errors
 
         if not last_updated:
-            cfg_date = Context.config.get("start_date")
-            if cfg_date:
+            config_date = Context.config.get("start_date")
+            if config_date:
                 try:
-                    last_updated = utils.strptime_to_utc(str(cfg_date).strip())
-                    source_used = f"CONFIG ({cfg_date})"
+                    last_updated = utils.strptime_to_utc(config_date)
                 except Exception:
-                    pass
+                    pass # Silently ignore parse errors
 
         if not last_updated:
-            last_updated = utils.strptime_to_utc("2021-01-01T00:00:00Z")
-            source_used = "DEFAULT FALLBACK (2021-01-01)"
-
-        # -------------------------------------------------------------
-        # STEP 2: Resolve optional end_date (env > config)
-        # -------------------------------------------------------------
+            fallback_date = "2021-01-01T00:00:00Z"
+            last_updated = utils.strptime_to_utc(fallback_date)
+        
         end_date = None
-        env_end_date = os.getenv("TAP_JIRA_END_DATE") or os.getenv("tapJiraEndDate")
-        cfg_end_date = Context.config.get("end_date")
-
-        if env_end_date and env_end_date.strip():
+        env_end_date = os.getenv("TAP_JIRA_END_DATE")
+        if env_end_date:
             try:
-                end_date = utils.strptime_to_utc(env_end_date.strip())
+                end_date = utils.strptime_to_utc(env_end_date)
             except Exception:
-                pass
-        elif cfg_end_date and str(cfg_end_date).strip():
-            try:
-                end_date = utils.strptime_to_utc(str(cfg_end_date).strip())
-            except Exception:
-                pass
+                pass # Silently ignore parse errors
 
-        # -------------------------------------------------------------
-        # STEP 3: Format dates with timezone
-        # -------------------------------------------------------------
         timezone = Context.retrieve_timezone()
         start_date_str = last_updated.astimezone(pytz.timezone(timezone)).strftime("%Y-%m-%d %H:%M")
         end_date_str = (
@@ -454,56 +476,52 @@ class Issues(Stream):
             else None
         )
 
-        # -------------------------------------------------------------
-        # STEP 4: Build JQL
-        # -------------------------------------------------------------
         jql = (
-            f"updated >= '{start_date_str}' AND updated < '{end_date_str}' order by updated asc"
+            f'updated >= "{start_date_str}" AND updated < "{end_date_str}" order by updated asc'
             if end_date_str
-            else f"updated >= '{start_date_str}' order by updated asc"
+            else f'updated >= "{start_date_str}" order by updated asc'
         )
+        
+        # This single log line is highly recommended to keep for operational visibility
+        LOGGER.info(f"Syncing issues with JQL: {jql}")
 
-        params = {
-            "fields": "*all",
-            "expand": "changelog,transitions",
-            "validateQuery": "strict",
+        json_body = {
             "jql": jql,
             "maxResults": DEFAULT_PAGE_SIZE,
         }
-        LOGGER.info(f"Fetching issues with JQL: {jql}")
+        
+        pager = Paginator(Context.client, items_key="issues")
+        current_max_updated = last_updated
 
-        # -------------------------------------------------------------
-        # STEP 5: Pagination and sync
-        # -------------------------------------------------------------
-        page_num = Context.bookmark(page_num_offset) or 0
-        pager = Paginator(Context.client, items_key="issues", page_num=page_num)
-
-        for page in pager.pages(self.tap_stream_id, "GET", "/rest/api/3/search/jql", params=params):
+        for page in pager.pages(self.tap_stream_id, "POST", "/rest/api/3/search/jql", json=json_body):
             if not page:
                 continue
 
-            sync_sub_streams(page)
-
-            for issue in page:
-                issue["fields"].pop("worklog", None)
-                issue["fields"].pop("operations", None)
-
-            if not page[-1]["fields"].get("updated"):
+            enriched_page = sync_sub_streams(page)
+            
+            if not enriched_page:
                 continue
 
-            last_updated = utils.strptime_to_utc(page[-1]["fields"]["updated"])
-            self.write_page(page)
+            for issue in enriched_page:
+                fields = issue.get("fields", {})
+                if fields:
+                    fields.pop("worklog", None)
+                    fields.pop("operations", None)
+                    fields.pop("comment", None)
 
-            Context.set_bookmark(page_num_offset, pager.next_page_num)
+            if enriched_page[-1].get("fields", {}).get("updated"):
+                page_max_updated = utils.strptime_to_utc(enriched_page[-1]["fields"]["updated"])
+                if page_max_updated > current_max_updated:
+                    current_max_updated = page_max_updated
+            
+            self.write_page(enriched_page)
+            
+            Context.set_bookmark(updated_bookmark_key, current_max_updated)
             singer.write_state(Context.state)
 
-        # -------------------------------------------------------------
-        # STEP 6: Finalize bookmarks
-        # -------------------------------------------------------------
         Context.set_bookmark(page_num_offset, None)
-        Context.set_bookmark(updated_bookmark, last_updated)
+        Context.set_bookmark(updated_bookmark_key, current_max_updated)
         singer.write_state(Context.state)
-
 
 
 class Worklogs(Stream):
