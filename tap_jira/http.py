@@ -245,16 +245,16 @@ class Client():
         # whether to pass the `auth` object for legacy basic auth.
         full_headers = self._headers(headers)
         
-        # The `auth` object is only needed for the original username/password method.
-        # For OAuth and our new api_key method, the Authorization header is already set.
-        auth_object = self.auth if self.auth_method == 'basic' else None
+        # Prioritize the 'auth' object passed in kwargs.
+        # Fall back to the client's default auth only if one isn't provided.
+        auth_object = kwargs.pop('auth', self.auth if hasattr(self, 'auth') else None)
 
         request = requests.Request(method,
                                    self.url(path),
                                    auth=auth_object,
                                    headers=full_headers,
                                    **kwargs)
-        # --- END MODIFIED ---
+        
         return self.session.send(request.prepare(), timeout=self.timeout)
 
     @backoff.on_exception(backoff.constant,

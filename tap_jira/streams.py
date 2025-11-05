@@ -284,48 +284,40 @@ class BoardsGreenhopper(Stream):
 
 
 
+
+
 class Projects(Stream):
     def sync(self):
         """
-        This stream has been found to require legacy username/password authentication.
-        It will create its own legacy client to handle this.
+        This stream requires legacy username/password authentication for its endpoints.
+        It will override the auth on a per-request basis.
         """
         username = Context.config.get("username")
         password = Context.config.get("password")
 
-        LOGGER.warning(f"--- DEBUG: Attempting Basic Auth with USERNAME: '{username}' ---")
-
         if not (username and password):
             LOGGER.warning("Username/Password not configured; skipping 'projects', 'versions', and 'components' streams.")
             return
+        
 
-        try:
-            # Create a dedicated legacy client configured for Basic Auth.
-            # It will correctly use the v3 base_url from the config.
-            legacy_config = {
-                "username": username,
-                "password": password,
-                "base_url": Context.config.get("base_url") 
-            }
-            legacy_client = Client(legacy_config)
-        except Exception as e:
-            LOGGER.error(f"Failed to create legacy client for Projects stream. Error: {e}", exc_info=True)
-            return
+        # Create an auth object and a headers dictionary to be passed into the request calls.
+        legacy_auth = HTTPBasicAuth(username, password)
+        legacy_headers = {"Accept": "application/json"}
+
 
         all_projects = []
         try:
-            # Use the dedicated legacy_client for this API call.
-            projects_page = legacy_client.request(
-                self.tap_stream_id, "GET", "/rest/api/3/project/search",
-                params={"expand": "description,lead,url,projectKeys"}
-            )
-            # The response from /search is a dictionary with a 'values' key
-            project_list = projects_page.get("values", [])
-            for project in project_list:
-                project.pop("versions", None)
-            
-            self.write_page(project_list)
-            all_projects.extend(project_list)
+            # We must use a paginated endpoint. /project/search is the modern standard.
+            # We will use the main Context.client, but pass our override auth and headers.
+            pager = Paginator(Context.client, items_key="values")
+            for page in pager.pages(self.tap_stream_id, "GET", "/rest/api/3/project/search", 
+                                    headers=legacy_headers, auth=legacy_auth, 
+                                    params={"expand": "description,lead,url,projectKeys"}):
+                for project in page:
+                    project.pop("versions", None)
+                self.write_page(page)
+                all_projects.extend(page)
+
         except Exception as e:
             LOGGER.error(f"Failed to fetch the main project list. Error: {e}", exc_info=True)
             return
@@ -333,17 +325,16 @@ class Projects(Stream):
         for project in all_projects:
             if Context.is_selected(VERSIONS.tap_stream_id):
                 path = f"/rest/api/3/project/{project['id']}/version"
-                # Use a new Paginator instance with the legacy_client
-                pager = Paginator(legacy_client) 
-                for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
+                pager = Paginator(Context.client)
+                for page in pager.pages(VERSIONS.tap_stream_id, "GET", path, headers=legacy_headers, auth=legacy_auth):
                     for record in page:
                         record = update_user_date(record)
                     VERSIONS.write_page(page)
             
             if Context.is_selected(COMPONENTS.tap_stream_id):
                 path = f"/rest/api/3/project/{project['id']}/component"
-                pager = Paginator(legacy_client)
-                for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
+                pager = Paginator(Context.client)
+                for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path, headers=legacy_headers, auth=legacy_auth):
                     COMPONENTS.write_page(page)
 
 class ProjectTypes(Stream):
