@@ -386,7 +386,27 @@ class ProjectTypes(Stream):
 
 class Users(Stream):
     def sync(self):
-        max_results = 2
+        """
+        This stream uses a direct, isolated requests session with Basic Auth
+        to exactly mimic a successful curl command.
+        """
+        username = Context.config.get("username")
+        password = Context.config.get("password")
+
+        if not (username and password):
+            LOGGER.warning("Username/Password not configured; skipping 'users' stream.")
+            return
+
+        # --- THIS IS THE KEY PATTERN ---
+        # Create a simple, dedicated session that is proven to work.
+        session = requests.Session()
+        session.auth = (username, password)
+        session.headers.update({
+            'Accept': 'application/json',
+            'X-Atlassian-Token': 'no-check'
+        })
+        base_url = "https://degreedjira.atlassian.net/rest/api/3"
+        # --- END KEY PATTERN ---
 
         if Context.config.get("groups"):
             groups = Context.config.get("groups").split(",")
@@ -400,16 +420,104 @@ class Users(Stream):
         for group in groups:
             group = group.strip()
             try:
-                params = {"groupname": group,
-                          "maxResults": max_results,
-                          "includeInactiveUsers": True}
-                pager = Paginator(Context.client, items_key='values')
-                for page in pager.pages(self.tap_stream_id, "GET",
-                                        "/rest/api/3/group/member",
-                                        params=params):
+                # --- Manually handle pagination inside this loop ---
+                start_at = 0
+                max_results = 50
+                
+                while True:
+                    params = {
+                        "groupname": group,
+                        "maxResults": max_results,
+                        "startAt": start_at,
+                        "includeInactiveUsers": True
+                    }
+                    
+                    response = session.get(f"{base_url}/group/member", params=params)
+                    
+                    # Gracefully handle a 404 if the group doesn't exist
+                    if response.status_code == 404:
+                        LOGGER.info("Could not find group \"%s\", skipping", group)
+                        break # Break the inner while loop and go to the next group
+
+                    response.raise_for_status() # Raise errors for other 4xx/5xx codes
+                    
+                    response_json = response.json()
+                    page = response_json.get("values", [])
+                    
+                    if not page:
+                        break # No more users in this group
+
                     self.write_page(page)
-            except JiraNotFoundError:
-                LOGGER.info("Could not find group \"%s\", skipping", group)
+                    
+                    if response_json.get("isLast", False) or len(page) < max_results:
+                        break # This was the last page for this group
+                        
+                    start_at += len(page)
+
+            except Exception as e:
+                LOGGER.error(f"Failed to sync users for group '{group}'. Error: {e}", exc_info=True)
+                # Continue to the next group even if one fails
+                continue
+
+class ProjectCategories(Stream):
+    def sync(self):
+        username = Context.config.get("username")
+        password = Context.config.get("password")
+        if not (username and password):
+            LOGGER.warning("Username/Password not configured; skipping 'project_categories' stream.")
+            return
+        
+        session = requests.Session()
+        session.auth = (username, password)
+        session.headers.update({'Accept': 'application/json', 'X-Atlassian-Token': 'no-check'})
+        base_url = "https://degreedjira.atlassian.net/rest/api/3"
+        
+        try:
+            response = session.get(f"{base_url}/projectCategory")
+            response.raise_for_status()
+            self.write_page(response.json())
+        except Exception as e:
+            LOGGER.error(f"Failed to fetch ProjectCategories. Error: {e}", exc_info=True)
+
+class Resolutions(Stream):
+    def sync(self):
+        username = Context.config.get("username")
+        password = Context.config.get("password")
+        if not (username and password):
+            LOGGER.warning("Username/Password not configured; skipping 'resolutions' stream.")
+            return
+        
+        session = requests.Session()
+        session.auth = (username, password)
+        session.headers.update({'Accept': 'application/json', 'X-Atlassian-Token': 'no-check'})
+        base_url = "https://degreedjira.atlassian.net/rest/api/3"
+
+        try:
+            response = session.get(f"{base_url}/resolution")
+            response.raise_for_status()
+            self.write_page(response.json())
+        except Exception as e:
+            LOGGER.error(f"Failed to fetch Resolutions. Error: {e}", exc_info=True)
+
+class Roles(Stream):
+    def sync(self):
+        username = Context.config.get("username")
+        password = Context.config.get("password")
+        if not (username and password):
+            LOGGER.warning("Username/Password not configured; skipping 'roles' stream.")
+            return
+        
+        session = requests.Session()
+        session.auth = (username, password)
+        session.headers.update({'Accept': 'application/json', 'X-Atlassian-Token': 'no-check'})
+        base_url = "https://degreedjira.atlassian.net/rest/api/3"
+        
+        try:
+            response = session.get(f"{base_url}/role")
+            response.raise_for_status()
+            self.write_page(response.json())
+        except Exception as e:
+            LOGGER.error(f"Failed to fetch Roles. Error: {e}", exc_info=True)            
 
 
 class Issues(Stream):
@@ -535,47 +643,72 @@ class Issues(Stream):
 
 
 class Worklogs(Stream):
-    def _fetch_ids(self, last_updated):
-        # since_ts uses millisecond precision
-        since_ts = int(last_updated.timestamp()) * 1000
-        return Context.client.request(
-            self.tap_stream_id,
-            "GET",
-            "/rest/api/3/worklog/updated",
-            params={"since": since_ts},
-        )
+    def _get_legacy_session(self):
+        """Helper to create a session with legacy auth."""
+        username = Context.config.get("username")
+        password = Context.config.get("password")
+        if not (username and password):
+            return None
+        
+        session = requests.Session()
+        session.auth = (username, password)
+        session.headers.update({'Accept': 'application/json', 'X-Atlassian-Token': 'no-check'})
+        return session
 
-    def _fetch_worklogs(self, ids):
+    def _fetch_ids(self, session, last_updated):
+        base_url = "https://degreedjira.atlassian.net/rest/api/3"
+        since_ts = int(last_updated.timestamp()) * 1000
+        response = session.get(f"{base_url}/worklog/updated", params={"since": since_ts})
+        response.raise_for_status()
+        return response.json()
+
+    def _fetch_worklogs(self, session, ids):
+        base_url = "https://degreedjira.atlassian.net/rest/api/3"
         if not ids:
             return []
-        return Context.client.request(
-            self.tap_stream_id, "POST", "/rest/api/3/worklog/list",
-            headers={"Content-Type": "application/json"},
-            data=json.dumps({"ids": ids}),
-        )
+        response = session.post(f"{base_url}/worklog/list", json={"ids": ids})
+        response.raise_for_status()
+        return response.json()
 
     def sync(self):
+        session = self._get_legacy_session()
+        if not session:
+            LOGGER.warning("Username/Password not configured; skipping 'worklogs' stream.")
+            return
+
         updated_bookmark = [self.tap_stream_id, "updated"]
+        # Assuming you have a Context method for this; if not, use the robust date logic.
         last_updated = Context.update_start_date_bookmark(updated_bookmark)
+        
         while True:
-            ids_page = self._fetch_ids(last_updated)
-            if not ids_page["values"]:
-                break
-            ids = [x["worklogId"] for x in ids_page["values"]]
-            worklogs = self._fetch_worklogs(ids)
+            try:
+                ids_page = self._fetch_ids(session, last_updated)
+                if not ids_page.get("values"):
+                    break
+                
+                ids = [x["worklogId"] for x in ids_page["values"]]
+                worklogs = self._fetch_worklogs(session, ids)
 
-            # Grab last_updated before transform in write_page
-            new_last_updated = advance_bookmark(worklogs)
+                if not worklogs:
+                    if ids_page.get("lastPage", False):
+                        break
+                    else:
+                        # Advance last_updated using the timestamp from the ids_page if worklogs are empty
+                        new_last_updated = utils.strptime_to_utc(ids_page["values"][-1]["updatedTime"])
+                        last_updated = new_last_updated
+                        continue
 
-            self.write_page(worklogs)
+                new_last_updated = advance_bookmark(worklogs)
+                self.write_page(worklogs)
 
-            last_updated = new_last_updated
-            Context.set_bookmark(updated_bookmark, last_updated)
-            singer.write_state(Context.state)
-            # lastPage is a boolean value based on
-            # https://developer.atlassian.com/cloud/jira/platform/rest/v3/?utm_source=%2Fcloud%2Fjira%2Fplatform%2Frest%2F&utm_medium=302#api-api-3-worklog-updated-get
-            last_page = ids_page.get("lastPage")
-            if last_page:
+                last_updated = new_last_updated
+                Context.set_bookmark(updated_bookmark, last_updated)
+                singer.write_state(Context.state)
+                
+                if ids_page.get("lastPage", False):
+                    break
+            except Exception as e:
+                LOGGER.error(f"Failed during Worklogs sync. Error: {e}", exc_info=True)
                 break
 
 
@@ -605,9 +738,9 @@ ALL_STREAMS = [
     VERSIONS,
     COMPONENTS,
     ProjectTypes("project_types", ["key"]),
-    Stream("project_categories", ["id"], path="/rest/api/3/projectCategory"),
-    Stream("resolutions", ["id"], path="/rest/api/3/resolution"),
-    Stream("roles", ["id"], path="/rest/api/3/role"),
+    ProjectCategories("project_categories", ["id"]),
+    Resolutions("resolutions", ["id"]),
+    Roles("roles", ["id"]),
     Users("users", ["accountId"]),
     ISSUES,
     ISSUE_COMMENTS,
