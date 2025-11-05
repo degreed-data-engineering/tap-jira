@@ -327,10 +327,32 @@ class Client():
                      json={"maxResults": 1, "jql": "ORDER BY created DESC"}) # ✅ Use POST with JSON body for /search/jql
 
     def test_basic_credentials_are_authorized(self):
-        # Make a call to myself endpoint for verify creds
-        # Here, we are retrieving serverInfo for the Jira instance by which credentials will also be verified.
-        # Assign True value to is_on_prem_instance property for on-prem Jira instance
-        self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
+        """
+        Makes a call to the /myself endpoint to verify credentials.
+        Also checks the deploymentType, but from a different endpoint if needed.
+        """
+        try:
+            
+            # Use the /myself endpoint for authentication validation. It's more reliable.
+            myself_response = self.request("users", "GET", "/rest/api/3/myself")
+            LOGGER.info(f"Successfully authenticated as user: {myself_response.get('displayName')}")
+            
+
+            # Now, separately try to get the serverInfo. If it fails, we can assume it's Cloud.
+            try:
+                server_info = self.request("serverInfo", "GET", "/rest/api/3/serverInfo")
+                self.is_on_prem_instance = server_info.get('deploymentType') == "Server"
+            except JiraNotFoundError:
+                # If /serverInfo gives a 404, it's a strong sign it's a Cloud instance.
+                self.is_on_prem_instance = False
+                LOGGER.info("Could not find /serverInfo endpoint, assuming Cloud deployment.")
+
+        except JiraUnauthorizedError:
+            LOGGER.critical("Authentication failed when testing basic credentials.")
+            raise
+        except Exception as e:
+            LOGGER.error(f"An unexpected error occurred during credential validation: {e}")
+            raise
 
 class Paginator():
     def __init__(self, client, items_key="values", **kwargs):
