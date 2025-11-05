@@ -283,83 +283,78 @@ class BoardsGreenhopper(Stream):
             singer.write_state(Context.state)
 
 class Projects(Stream):
-    def sync_on_prem(self):
-        """ Sync function for the on prem instances"""
-        projects = Context.client.request(
-            self.tap_stream_id, "GET", "/rest/api/3/project",
-            params={"expand": "description,lead,url,projectKeys"})
+    def _sync_legacy_substreams(self, projects):
+        """
+        Handles syncing substreams (versions, components) that require
+        legacy username/password authentication.
+        """
+        username = Context.config.get("username")
+        password = Context.config.get("password")
+
+        # If legacy credentials aren't provided, we can't sync these streams.
+        if not (username and password):
+            LOGGER.warning("Username/Password not configured in meltano.yml; "
+                         "skipping versions and components sync for all projects.")
+            return
+
+        # Create a temporary, legacy client on the fly.
+        try:
+            legacy_config = {
+                "username": username,
+                "password": password,
+                "base_url": Context.config.get("base_url")
+            }
+            legacy_client = Client(legacy_config)
+        except Exception as e:
+            LOGGER.error(f"Failed to create legacy client for versions/components. Error: {e}")
+            return
+
+        # Now, use this legacy client for the protected endpoints.
         for project in projects:
-            # The Jira documentation suggests that a "versions" key may appear
-            # in the project, but from my testing that hasn't been the case
-            # (even when projects do have versions). Since we are already
-            # syncing versions separately, pop this key just in case it
-            # appears.
-            project.pop("versions", None)
-        self.write_page(projects)
-        if Context.is_selected(VERSIONS.tap_stream_id):
-            for project in projects:
-                path = "/rest/api/3/project/{}/version".format(project["id"])
-                pager = Paginator(Context.client, order_by="sequence")
+            if Context.is_selected(VERSIONS.tap_stream_id):
+                path = f"/rest/api/3/project/{project['id']}/version"
+                pager = Paginator(legacy_client, order_by="sequence") # Use the legacy client
                 for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
-                    # Transform userReleaseDate and userStartDate values to 'yyyy-mm-dd' format.
                     for each_page in page:
                         each_page = update_user_date(each_page)
                     VERSIONS.write_page(page)
-        if Context.is_selected(COMPONENTS.tap_stream_id):
-            for project in projects:
-                path = "/rest/api/3/project/{}/component".format(project["id"])
-                pager = Paginator(Context.client)
+            
+            if Context.is_selected(COMPONENTS.tap_stream_id):
+                path = f"/rest/api/3/project/{project['id']}/component"
+                pager = Paginator(legacy_client) # Use the legacy client
                 for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
                     COMPONENTS.write_page(page)
 
+    def sync_on_prem(self):
+        """ Sync function for the on-prem instances"""
+        # Use the main client (api_key) to get the list of projects
+        projects = Context.client.request(
+            self.tap_stream_id, "GET", "/rest/api/3/project",
+            params={"expand": "description,lead,url,projectKeys"})
+        
+        for project in projects:
+            project.pop("versions", None)
+        self.write_page(projects)
+        
+        # Call the special handler for legacy substreams
+        self._sync_legacy_substreams(projects)
+
     def sync_cloud(self):
         """ Sync function for the cloud instances"""
-        offset = 0
-        while True:
-            params = {
-                "expand": "description,lead,url,projectKeys",
-                "maxResults": DEFAULT_PAGE_SIZE, # maximum number of results to fetch in a page.
-                "startAt": offset #the offset to start at for the next page
-            }
-            projects = Context.client.request(
-                self.tap_stream_id, "GET", "/rest/api/3/project/search",
-                params=params)
-            for project in projects.get('values'):
-                # The Jira documentation suggests that a "versions" key may appear
-                # in the project, but from my testing that hasn't been the case
-                # (even when projects do have versions). Since we are already
-                # syncing versions separately, pop this key just in case it
-                # appears.
+        all_projects = []
+        pager = Paginator(Context.client, items_key="values")
+
+        # Use the main client (api_key) to get the list of projects
+        for page in pager.pages(self.tap_stream_id, "GET", "/rest/api/3/project/search", params={"expand": "description,lead,url,projectKeys"}):
+            for project in page:
                 project.pop("versions", None)
-            self.write_page(projects.get('values'))
-            if Context.is_selected(VERSIONS.tap_stream_id):
-                for project in projects.get('values'):
-                    path = "/rest/api/3/project/{}/version".format(project["id"])
-                    pager = Paginator(Context.client, order_by="sequence")
-                    for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
-                        # Transform userReleaseDate and userStartDate values to 'yyyy-mm-dd' format.
-                        for each_page in page:
-                            each_page = update_user_date(each_page)
-
-                        VERSIONS.write_page(page)
-            if Context.is_selected(COMPONENTS.tap_stream_id):
-                for project in projects.get('values'):
-                    path = "/rest/api/3/project/{}/component".format(project["id"])
-                    pager = Paginator(Context.client)
-                    for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
-                        COMPONENTS.write_page(page)
-
-            # `isLast` corresponds to whether it is the last page or not.
-            if projects.get("isLast"):
-                break
-            offset = offset + DEFAULT_PAGE_SIZE # next offset to start from
+            self.write_page(page)
+            all_projects.extend(page)
+        
+        # Call the special handler for legacy substreams
+        self._sync_legacy_substreams(all_projects)
 
     def sync(self):
-        # The documentation https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-get
-        # suggests that the rest/api/3/project endpoint would be deprecated from the version 3 and w could use project/search endpoint
-        # which gives paginated response. However, the on prem servers doesn't allow working on the project/search endpoint. Hence for the cloud
-        # instances, the new endpoint would be called which also suggests pagination, but for on prm instances the old endpoint would be called.
-        # As we want to include both the cloud as well as the on-prem servers.
         if Context.client.is_on_prem_instance:
             self.sync_on_prem()
         else:
