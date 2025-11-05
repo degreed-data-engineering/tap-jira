@@ -6,7 +6,7 @@ import dateparser
 import os
 
 from singer import metrics, utils, metadata, Transformer
-from .http import Paginator,JiraNotFoundError
+from .http import Paginator, JiraNotFoundError, Client
 from .context import Context
 
 DEFAULT_PAGE_SIZE = 50
@@ -283,82 +283,64 @@ class BoardsGreenhopper(Stream):
             singer.write_state(Context.state)
 
 class Projects(Stream):
-    def _sync_legacy_substreams(self, projects):
+    def sync(self):
         """
-        Handles syncing substreams (versions, components) that require
-        legacy username/password authentication.
+        This stream has been found to require legacy username/password authentication
+        for all of its endpoints. It will create its own legacy client.
         """
         username = Context.config.get("username")
         password = Context.config.get("password")
 
-        # If legacy credentials aren't provided, we can't sync these streams.
         if not (username and password):
-            LOGGER.warning("Username/Password not configured in meltano.yml; "
-                         "skipping versions and components sync for all projects.")
+            LOGGER.warning("Username/Password not configured; skipping 'projects', 'versions', and 'components' streams.")
             return
 
-        # Create a temporary, legacy client on the fly.
         try:
             legacy_config = {
                 "username": username,
                 "password": password,
                 "base_url": Context.config.get("base_url")
             }
+            # Use a dedicated client for this entire stream
             legacy_client = Client(legacy_config)
         except Exception as e:
-            LOGGER.error(f"Failed to create legacy client for versions/components. Error: {e}")
+            LOGGER.error(f"Failed to create legacy client for Projects stream. Error: {e}")
             return
 
-        # Now, use this legacy client for the protected endpoints.
-        for project in projects:
+        # --- STEP 1: Fetch all projects using the legacy client ---
+        all_projects = []
+        # NOTE: We are using the older, non-paginated /project endpoint as it is
+        # more likely to work with legacy auth if /project/search is failing.
+        try:
+            projects_page = legacy_client.request(
+                self.tap_stream_id, "GET", "/rest/api/3/project",
+                params={"expand": "description,lead,url,projectKeys"}
+            )
+            for project in projects_page:
+                project.pop("versions", None)
+            
+            self.write_page(projects_page)
+            all_projects.extend(projects_page)
+        except Exception as e:
+            LOGGER.error(f"Failed to fetch the main project list. Error: {e}")
+            # Stop here if we can't get the project list
+            return
+
+        # --- STEP 2: Fetch substreams for each project, also using the legacy client ---
+        for project in all_projects:
             if Context.is_selected(VERSIONS.tap_stream_id):
                 path = f"/rest/api/3/project/{project['id']}/version"
-                pager = Paginator(legacy_client, order_by="sequence") # Use the legacy client
+                pager = Paginator(legacy_client, order_by="sequence")
                 for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
-                    for each_page in page:
-                        each_page = update_user_date(each_page)
+                    for record in page:
+                        record = update_user_date(record)
                     VERSIONS.write_page(page)
             
             if Context.is_selected(COMPONENTS.tap_stream_id):
                 path = f"/rest/api/3/project/{project['id']}/component"
-                pager = Paginator(legacy_client) # Use the legacy client
+                pager = Paginator(legacy_client)
                 for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
                     COMPONENTS.write_page(page)
-
-    def sync_on_prem(self):
-        """ Sync function for the on-prem instances"""
-        # Use the main client (api_key) to get the list of projects
-        projects = Context.client.request(
-            self.tap_stream_id, "GET", "/rest/api/3/project",
-            params={"expand": "description,lead,url,projectKeys"})
-        
-        for project in projects:
-            project.pop("versions", None)
-        self.write_page(projects)
-        
-        # Call the special handler for legacy substreams
-        self._sync_legacy_substreams(projects)
-
-    def sync_cloud(self):
-        """ Sync function for the cloud instances"""
-        all_projects = []
-        pager = Paginator(Context.client, items_key="values")
-
-        # Use the main client (api_key) to get the list of projects
-        for page in pager.pages(self.tap_stream_id, "GET", "/rest/api/3/project/search", params={"expand": "description,lead,url,projectKeys"}):
-            for project in page:
-                project.pop("versions", None)
-            self.write_page(page)
-            all_projects.extend(page)
-        
-        # Call the special handler for legacy substreams
-        self._sync_legacy_substreams(all_projects)
-
-    def sync(self):
-        if Context.client.is_on_prem_instance:
-            self.sync_on_prem()
-        else:
-            self.sync_cloud()
 
 class ProjectTypes(Stream):
     def sync(self):
