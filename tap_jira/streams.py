@@ -302,9 +302,10 @@ class Projects(Stream):
             legacy_config = {
                 "username": username,
                 "password": password,
-                "base_url": "https://degreedjira.atlassian.net/rest/api/3" # Use v3 as confirmed
+                "base_url": Context.client.base_url # Inherit the proven, working base_url
             }
             legacy_client = Client(legacy_config)
+
             
             # This is a common header required to bypass CSRF protection on some endpoints.
             legacy_headers = {
