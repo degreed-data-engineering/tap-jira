@@ -285,8 +285,7 @@ class BoardsGreenhopper(Stream):
 class Projects(Stream):
     def sync(self):
         """
-        This stream has been found to require legacy username/password authentication
-        for all of its endpoints. It will create its own legacy client.
+        This stream requires legacy username/password authentication.
         """
         username = Context.config.get("username")
         password = Context.config.get("password")
@@ -295,25 +294,19 @@ class Projects(Stream):
             LOGGER.warning("Username/Password not configured; skipping 'projects', 'versions', and 'components' streams.")
             return
 
-        try:
-            legacy_config = {
-                "username": username,
-                "password": password,
-                "base_url": Context.config.get("base_url")
-            }
-            # Use a dedicated client for this entire stream
-            legacy_client = Client(legacy_config)
-        except Exception as e:
-            LOGGER.error(f"Failed to create legacy client for Projects stream. Error: {e}")
-            return
+        # We will use the main client but override the authentication per-request.
+        # This is cleaner than creating a whole new client object.
+        legacy_auth = HTTPBasicAuth(username, password)
+        legacy_headers = {"Accept": "application/json"}
 
-        # --- STEP 1: Fetch all projects using the legacy client ---
+
         all_projects = []
-        # NOTE: We are using the older, non-paginated /project endpoint as it is
-        # more likely to work with legacy auth if /project/search is failing.
         try:
-            projects_page = legacy_client.request(
+            # Use the main client, but pass the specific auth and headers for this call.
+            projects_page = Context.client.request(
                 self.tap_stream_id, "GET", "/rest/api/3/project",
+                headers=legacy_headers,
+                auth=legacy_auth,
                 params={"expand": "description,lead,url,projectKeys"}
             )
             for project in projects_page:
@@ -322,24 +315,27 @@ class Projects(Stream):
             self.write_page(projects_page)
             all_projects.extend(projects_page)
         except Exception as e:
-            LOGGER.error(f"Failed to fetch the main project list. Error: {e}")
-            # Stop here if we can't get the project list
+            LOGGER.error(f"Failed to fetch the main project list. Error: {e}", exc_info=True)
             return
 
-        # --- STEP 2: Fetch substreams for each project, also using the legacy client ---
         for project in all_projects:
             if Context.is_selected(VERSIONS.tap_stream_id):
                 path = f"/rest/api/3/project/{project['id']}/version"
-                pager = Paginator(legacy_client, order_by="sequence")
-                for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
+                # We need to create a new Paginator instance for each project's substreams
+                # because the Paginator class is stateful (it tracks page numbers).
+                pager = Paginator(Context.client) 
+                
+                # Pass the legacy auth and headers to every paginated request.
+                for page in pager.pages(VERSIONS.tap_stream_id, "GET", path, headers=legacy_headers, auth=legacy_auth):
                     for record in page:
                         record = update_user_date(record)
                     VERSIONS.write_page(page)
             
             if Context.is_selected(COMPONENTS.tap_stream_id):
                 path = f"/rest/api/3/project/{project['id']}/component"
-                pager = Paginator(legacy_client)
-                for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
+                pager = Paginator(Context.client)
+                
+                for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path, headers=legacy_headers, auth=legacy_auth):
                     COMPONENTS.write_page(page)
 
 class ProjectTypes(Stream):
