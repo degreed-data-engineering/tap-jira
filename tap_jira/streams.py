@@ -287,8 +287,8 @@ class BoardsGreenhopper(Stream):
 class Projects(Stream):
     def sync(self):
         """
-        This stream requires legacy username/password authentication.
-        It will create one single legacy client and reuse its session for all calls.
+        This stream uses a direct, isolated requests session with Basic Auth
+        to exactly mimic a successful curl command, bypassing the shared Client.
         """
         username = Context.config.get("username")
         password = Context.config.get("password")
@@ -297,35 +297,36 @@ class Projects(Stream):
             LOGGER.warning("Username/Password not configured; skipping 'projects', 'versions', and 'components' streams.")
             return
 
-        try:
-            # Create ONE dedicated legacy client for this entire stream sync.
-            legacy_config = {
-                "username": username,
-                "password": password,
-                "base_url": Context.client.base_url # Inherit the proven, working base_url
-            }
-            legacy_client = Client(legacy_config)
-
-            
-            # This is a common header required to bypass CSRF protection on some endpoints.
-            legacy_headers = {
-                'Accept': 'application/json',
-                'X-Atlassian-Token': 'no-check' 
-            }
-        except Exception as e:
-            LOGGER.error(f"Failed to create legacy client for Projects stream. Error: {e}", exc_info=True)
-            return
+        # --- THIS IS THE KEY CHANGE ---
+        # Create a simple, dedicated session for this stream only.
+        session = requests.Session()
+        session.auth = (username, password) # Set Basic Auth directly
+        session.headers.update({
+            'Accept': 'application/json',
+            'X-Atlassian-Token': 'no-check'
+        })
+        base_url = "https://degreedjira.atlassian.net/rest/api/3"
+        # --- END KEY CHANGE ---
 
         all_projects = []
         try:
-            pager = Paginator(legacy_client, items_key="values")
-            for page in pager.pages(self.tap_stream_id, "GET", "/project/search",
-                                    headers=legacy_headers,
-                                    params={"expand": "description,lead,url,projectKeys"}):
-                for project in page:
-                    project.pop("versions", None)
-                self.write_page(page)
-                all_projects.extend(page)
+            # Use the dedicated session to fetch the project list.
+            # This is a manual, non-paginated call for simplicity, assuming project list is not huge.
+            # If it is, we can add simple startAt pagination here later.
+            response = session.get(
+                f"{base_url}/project/search",
+                params={"expand": "description,lead,url,projectKeys"}
+            )
+            response.raise_for_status() # Will raise an error for 4xx/5xx status codes
+            
+            project_list = response.json().get("values", [])
+            for project in project_list:
+                project.pop("versions", None)
+            
+            self.write_page(project_list)
+            all_projects.extend(project_list)
+            LOGGER.info(f"Successfully fetched {len(all_projects)} projects.")
+
         except Exception as e:
             LOGGER.error(f"Failed to fetch the main project list. Error: {e}", exc_info=True)
             return
@@ -333,17 +334,27 @@ class Projects(Stream):
         for project in all_projects:
             if Context.is_selected(VERSIONS.tap_stream_id):
                 path = f"/project/{project['id']}/version"
-                pager = Paginator(legacy_client)
-                for page in pager.pages(VERSIONS.tap_stream_id, "GET", path, headers=legacy_headers):
+                try:
+                    # Use the same session for the sub-stream call
+                    response = session.get(f"{base_url}{path}")
+                    response.raise_for_status()
+                    page = response.json().get("values", [])
                     for record in page:
                         record = update_user_date(record)
                     VERSIONS.write_page(page)
+                except Exception as e:
+                    LOGGER.warning(f"Could not fetch versions for project {project['key']}. Error: {e}")
             
             if Context.is_selected(COMPONENTS.tap_stream_id):
                 path = f"/project/{project['id']}/component"
-                pager = Paginator(legacy_client)
-                for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path, headers=legacy_headers):
+                try:
+                    # Use the same session for the sub-stream call
+                    response = session.get(f"{base_url}{path}")
+                    response.raise_for_status()
+                    page = response.json().get("values", [])
                     COMPONENTS.write_page(page)
+                except Exception as e:
+                    LOGGER.warning(f"Could not fetch components for project {project['key']}. Error: {e}")
 
 class ProjectTypes(Stream):
     def sync(self):
