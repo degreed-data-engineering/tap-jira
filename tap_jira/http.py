@@ -332,41 +332,55 @@ class Client():
         # Assign True value to is_on_prem_instance property for on-prem Jira instance
         self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
 
-# In your http.py file
-
 class Paginator():
-    def __init__(self, client, items_key="values"):
+    def __init__(self, client, items_key="values", **kwargs):
         self.client = client
         self.items_key = items_key
-        # Start with a sentinel value to run the loop once.
-        self.next_page_token = ""
+        
+        # Determine which pagination method to use
+        if 'page_num' in kwargs:
+            self.method = 'startAt'
+            self.next_page_num = kwargs.get('page_num', 0)
+            self.order_by = kwargs.get('order_by')
+            self.page_size = kwargs.get('page_size', 50)
+        else:
+            self.method = 'nextPageToken'
+            self.next_page_token = "" # Sentinel
 
     def pages(self, *args, **kwargs):
-        """
-        Returns a generator which yields pages of data using token-based pagination.
-        This method expects to receive a 'json' dictionary in kwargs for the initial request.
-        """
-        # Make a copy of the initial request body.
-        json_body = kwargs.pop("json", {}).copy()
+        if self.method == 'nextPageToken':
+            # --- This is your proven, working nextPageToken logic ---
+            json_body = kwargs.pop("json", {}).copy()
+            while self.next_page_token is not None:
+                current_json_body = json_body.copy()
+                if self.next_page_token:
+                    current_json_body["nextPageToken"] = self.next_page_token
+                
+                response = self.client.request(*args, json=current_json_body, **kwargs)
+                page = response.get(self.items_key, [])
+                
+                is_last = response.get("isLast", True)
+                self.next_page_token = response.get("nextPageToken") if not is_last else None
 
-        while self.next_page_token is not None:
-            # For subsequent requests, add the token to the existing payload.
-            # DO NOT create a new payload. The API needs the original JQL context.
-            if self.next_page_token: # Only add it if it's not the empty-string first run
-                json_body["nextPageToken"] = self.next_page_token
-            
-            # For the first run, ensure no old token is present
-            elif "nextPageToken" in json_body:
-                del json_body["nextPageToken"]
+                if page:
+                    yield page
+        
+        elif self.method == 'startAt':
+            # --- This is the classic, working startAt logic ---
+            params = kwargs.pop("params", {}).copy()
+            while self.next_page_num is not None:
+                params["maxResults"] = self.page_size
+                params["startAt"] = self.next_page_num
+                if self.order_by:
+                    params["orderBy"] = self.order_by
 
-            response = self.client.request(*args, json=json_body, **kwargs)
+                response = self.client.request(*args, params=params, **kwargs)
+                page = response.get(self.items_key, [])
+                
+                if not page or len(page) < self.page_size:
+                    self.next_page_num = None
+                else:
+                    self.next_page_num += len(page)
 
-            page = response.get(self.items_key, [])
-            
-            is_last = response.get("isLast", True)
-            
-            # Get the token for the next iteration.
-            self.next_page_token = response.get("nextPageToken") if not is_last else None
-
-            if page:
-                yield page
+                if page:
+                    yield page
