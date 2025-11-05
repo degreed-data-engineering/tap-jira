@@ -4,6 +4,7 @@ import pytz
 import singer
 import dateparser
 import os
+import requests
 from requests.auth import HTTPBasicAuth
 from singer import metrics, utils, metadata, Transformer
 from .http import Paginator, JiraNotFoundError, Client
