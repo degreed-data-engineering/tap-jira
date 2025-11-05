@@ -284,13 +284,11 @@ class BoardsGreenhopper(Stream):
 
 
 
-
-
 class Projects(Stream):
     def sync(self):
         """
-        This stream requires legacy username/password authentication for its endpoints.
-        It will override the auth on a per-request basis.
+        This stream requires legacy username/password authentication.
+        It will create one single legacy client and reuse its session for all calls.
         """
         username = Context.config.get("username")
         password = Context.config.get("password")
@@ -298,43 +296,52 @@ class Projects(Stream):
         if not (username and password):
             LOGGER.warning("Username/Password not configured; skipping 'projects', 'versions', and 'components' streams.")
             return
-        
 
-        # Create an auth object and a headers dictionary to be passed into the request calls.
-        legacy_auth = HTTPBasicAuth(username, password)
-        legacy_headers = {"Accept": "application/json"}
-
+        try:
+            # Create ONE dedicated legacy client for this entire stream sync.
+            legacy_config = {
+                "username": username,
+                "password": password,
+                "base_url": "https://degreedjira.atlassian.net/rest/api/3" # Use v3 as confirmed
+            }
+            legacy_client = Client(legacy_config)
+            
+            # This is a common header required to bypass CSRF protection on some endpoints.
+            legacy_headers = {
+                'Accept': 'application/json',
+                'X-Atlassian-Token': 'no-check' 
+            }
+        except Exception as e:
+            LOGGER.error(f"Failed to create legacy client for Projects stream. Error: {e}", exc_info=True)
+            return
 
         all_projects = []
         try:
-            # We must use a paginated endpoint. /project/search is the modern standard.
-            # We will use the main Context.client, but pass our override auth and headers.
-            pager = Paginator(Context.client, items_key="values")
-            for page in pager.pages(self.tap_stream_id, "GET", "/rest/api/3/project/search", 
-                                    headers=legacy_headers, auth=legacy_auth, 
+            pager = Paginator(legacy_client, items_key="values")
+            for page in pager.pages(self.tap_stream_id, "GET", "/project/search",
+                                    headers=legacy_headers,
                                     params={"expand": "description,lead,url,projectKeys"}):
                 for project in page:
                     project.pop("versions", None)
                 self.write_page(page)
                 all_projects.extend(page)
-
         except Exception as e:
             LOGGER.error(f"Failed to fetch the main project list. Error: {e}", exc_info=True)
             return
 
         for project in all_projects:
             if Context.is_selected(VERSIONS.tap_stream_id):
-                path = f"/rest/api/3/project/{project['id']}/version"
-                pager = Paginator(Context.client)
-                for page in pager.pages(VERSIONS.tap_stream_id, "GET", path, headers=legacy_headers, auth=legacy_auth):
+                path = f"/project/{project['id']}/version"
+                pager = Paginator(legacy_client)
+                for page in pager.pages(VERSIONS.tap_stream_id, "GET", path, headers=legacy_headers):
                     for record in page:
                         record = update_user_date(record)
                     VERSIONS.write_page(page)
             
             if Context.is_selected(COMPONENTS.tap_stream_id):
-                path = f"/rest/api/3/project/{project['id']}/component"
-                pager = Paginator(Context.client)
-                for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path, headers=legacy_headers, auth=legacy_auth):
+                path = f"/project/{project['id']}/component"
+                pager = Paginator(legacy_client)
+                for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path, headers=legacy_headers):
                     COMPONENTS.write_page(page)
 
 class ProjectTypes(Stream):
