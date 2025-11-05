@@ -289,7 +289,7 @@ class Projects(Stream):
     def sync(self):
         """
         This stream uses a direct, isolated requests session with Basic Auth
-        to exactly mimic a successful curl command, bypassing the shared Client.
+        to exactly mimic a successful curl command, now with self-contained pagination.
         """
         username = Context.config.get("username")
         password = Context.config.get("password")
@@ -298,8 +298,7 @@ class Projects(Stream):
             LOGGER.warning("Username/Password not configured; skipping 'projects', 'versions', and 'components' streams.")
             return
 
-        # --- THIS IS THE KEY CHANGE ---
-        # Create a simple, dedicated session for this stream only.
+        # Create a simple, dedicated session that will be reused for all calls in this stream.
         session = requests.Session()
         session.auth = (username, password) # Set Basic Auth directly
         session.headers.update({
@@ -307,36 +306,56 @@ class Projects(Stream):
             'X-Atlassian-Token': 'no-check'
         })
         base_url = "https://degreedjira.atlassian.net/rest/api/3"
-        # --- END KEY CHANGE ---
 
         all_projects = []
         try:
-            # Use the dedicated session to fetch the project list.
-            # This is a manual, non-paginated call for simplicity, assuming project list is not huge.
-            # If it is, we can add simple startAt pagination here later.
-            response = session.get(
-                f"{base_url}/project/search",
-                params={"expand": "description,lead,url,projectKeys"}
-            )
-            response.raise_for_status() # Will raise an error for 4xx/5xx status codes
+            # --- START: SELF-CONTAINED PAGINATION LOGIC ---
+            start_at = 0
+            max_results = 50 # Standard page size
             
-            project_list = response.json().get("values", [])
-            for project in project_list:
-                project.pop("versions", None)
-            
-            self.write_page(project_list)
-            all_projects.extend(project_list)
-            LOGGER.info(f"Successfully fetched {len(all_projects)} projects.")
+            while True:
+                params = {
+                    "expand": "description,lead,url,projectKeys",
+                    "maxResults": max_results,
+                    "startAt": start_at
+                }
+                
+                response = session.get(f"{base_url}/project/search", params=params)
+                response.raise_for_status()
+                
+                response_json = response.json()
+                page_of_projects = response_json.get("values", [])
+                
+                if not page_of_projects:
+                    # If we get an empty page, we are done.
+                    break
+
+                for project in page_of_projects:
+                    project.pop("versions", None)
+                
+                self.write_page(page_of_projects)
+                all_projects.extend(page_of_projects)
+                
+                # Check if this was the last page
+                if response_json.get("isLast", False) or len(page_of_projects) < max_results:
+                    break
+                
+                # Advance to the next page
+                start_at += len(page_of_projects)
+            # --- END: SELF-CONTAINED PAGINATION LOGIC ---
+
+            LOGGER.info(f"Successfully fetched {len(all_projects)} projects across all pages.")
 
         except Exception as e:
             LOGGER.error(f"Failed to fetch the main project list. Error: {e}", exc_info=True)
             return
 
+       
         for project in all_projects:
             if Context.is_selected(VERSIONS.tap_stream_id):
                 path = f"/project/{project['id']}/version"
                 try:
-                    # Use the same session for the sub-stream call
+                    # Use the same persistent session
                     response = session.get(f"{base_url}{path}")
                     response.raise_for_status()
                     page = response.json().get("values", [])
@@ -349,7 +368,6 @@ class Projects(Stream):
             if Context.is_selected(COMPONENTS.tap_stream_id):
                 path = f"/project/{project['id']}/component"
                 try:
-                    # Use the same session for the sub-stream call
                     response = session.get(f"{base_url}{path}")
                     response.raise_for_status()
                     page = response.json().get("values", [])
