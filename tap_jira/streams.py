@@ -293,6 +293,8 @@ class Projects(Stream):
         username = Context.config.get("username")
         password = Context.config.get("password")
 
+        LOGGER.warning(f"--- DEBUG: Attempting Basic Auth with USERNAME: '{username}' ---")
+
         if not (username and password):
             LOGGER.warning("Username/Password not configured; skipping 'projects', 'versions', and 'components' streams.")
             return
