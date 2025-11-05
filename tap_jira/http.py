@@ -245,16 +245,16 @@ class Client():
         # whether to pass the `auth` object for legacy basic auth.
         full_headers = self._headers(headers)
         
-        # The `auth` object is only needed for the original username/password method.
-        # For OAuth and our new api_key method, the Authorization header is already set.
-        auth_object = self.auth if self.auth_method == 'basic' else None
+        # Prioritize the 'auth' object passed in kwargs.
+        # Fall back to the client's default auth only if one isn't provided.
+        auth_object = kwargs.pop('auth', self.auth if hasattr(self, 'auth') else None)
 
         request = requests.Request(method,
                                    self.url(path),
                                    auth=auth_object,
                                    headers=full_headers,
                                    **kwargs)
-        # --- END MODIFIED ---
+        
         return self.session.send(request.prepare(), timeout=self.timeout)
 
     @backoff.on_exception(backoff.constant,
@@ -327,46 +327,82 @@ class Client():
                      json={"maxResults": 1, "jql": "ORDER BY created DESC"}) # ✅ Use POST with JSON body for /search/jql
 
     def test_basic_credentials_are_authorized(self):
-        # Make a call to myself endpoint for verify creds
-        # Here, we are retrieving serverInfo for the Jira instance by which credentials will also be verified.
-        # Assign True value to is_on_prem_instance property for on-prem Jira instance
-        self.is_on_prem_instance = self.request("users","GET","/rest/api/3/serverInfo").get('deploymentType') == "Server"
+        """
+        Makes a call to the /myself endpoint to verify credentials.
+        Also checks the deploymentType, but from a different endpoint if needed.
+        """
+        try:
+            
+            # Use the /myself endpoint for authentication validation. It's more reliable.
+            myself_response = self.request("users", "GET", "/rest/api/3/myself")
+            LOGGER.info(f"Successfully authenticated as user: {myself_response.get('displayName')}")
+            
 
-# In your http.py file
+            # Now, separately try to get the serverInfo. If it fails, we can assume it's Cloud.
+            try:
+                server_info = self.request("serverInfo", "GET", "/rest/api/3/serverInfo")
+                self.is_on_prem_instance = server_info.get('deploymentType') == "Server"
+            except JiraNotFoundError:
+                # If /serverInfo gives a 404, it's a strong sign it's a Cloud instance.
+                self.is_on_prem_instance = False
+                LOGGER.info("Could not find /serverInfo endpoint, assuming Cloud deployment.")
+
+        except JiraUnauthorizedError:
+            LOGGER.critical("Authentication failed when testing basic credentials.")
+            raise
+        except Exception as e:
+            LOGGER.error(f"An unexpected error occurred during credential validation: {e}")
+            raise
 
 class Paginator():
-    def __init__(self, client, items_key="values"):
+    def __init__(self, client, items_key="values", **kwargs):
         self.client = client
         self.items_key = items_key
-        # Start with a sentinel value to run the loop once.
-        self.next_page_token = ""
+        
+        # Determine which pagination method to use
+        if 'page_num' in kwargs:
+            self.method = 'startAt'
+            self.next_page_num = kwargs.get('page_num', 0)
+            self.order_by = kwargs.get('order_by')
+            self.page_size = kwargs.get('page_size', 50)
+        else:
+            self.method = 'nextPageToken'
+            self.next_page_token = "" # Sentinel
 
     def pages(self, *args, **kwargs):
-        """
-        Returns a generator which yields pages of data using token-based pagination.
-        This method expects to receive a 'json' dictionary in kwargs for the initial request.
-        """
-        # Make a copy of the initial request body.
-        json_body = kwargs.pop("json", {}).copy()
+        if self.method == 'nextPageToken':
+            # --- This is your proven, working nextPageToken logic ---
+            json_body = kwargs.pop("json", {}).copy()
+            while self.next_page_token is not None:
+                current_json_body = json_body.copy()
+                if self.next_page_token:
+                    current_json_body["nextPageToken"] = self.next_page_token
+                
+                response = self.client.request(*args, json=current_json_body, **kwargs)
+                page = response.get(self.items_key, [])
+                
+                is_last = response.get("isLast", True)
+                self.next_page_token = response.get("nextPageToken") if not is_last else None
 
-        while self.next_page_token is not None:
-            # For subsequent requests, add the token to the existing payload.
-            # DO NOT create a new payload. The API needs the original JQL context.
-            if self.next_page_token: # Only add it if it's not the empty-string first run
-                json_body["nextPageToken"] = self.next_page_token
-            
-            # For the first run, ensure no old token is present
-            elif "nextPageToken" in json_body:
-                del json_body["nextPageToken"]
+                if page:
+                    yield page
+        
+        elif self.method == 'startAt':
+            # --- This is the classic, working startAt logic ---
+            params = kwargs.pop("params", {}).copy()
+            while self.next_page_num is not None:
+                params["maxResults"] = self.page_size
+                params["startAt"] = self.next_page_num
+                if self.order_by:
+                    params["orderBy"] = self.order_by
 
-            response = self.client.request(*args, json=json_body, **kwargs)
+                response = self.client.request(*args, params=params, **kwargs)
+                page = response.get(self.items_key, [])
+                
+                if not page or len(page) < self.page_size:
+                    self.next_page_num = None
+                else:
+                    self.next_page_num += len(page)
 
-            page = response.get(self.items_key, [])
-            
-            is_last = response.get("isLast", True)
-            
-            # Get the token for the next iteration.
-            self.next_page_token = response.get("nextPageToken") if not is_last else None
-
-            if page:
-                yield page
+                if page:
+                    yield page

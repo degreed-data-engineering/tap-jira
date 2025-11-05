@@ -4,9 +4,10 @@ import pytz
 import singer
 import dateparser
 import os
-
+import requests
+from requests.auth import HTTPBasicAuth
 from singer import metrics, utils, metadata, Transformer
-from .http import Paginator,JiraNotFoundError
+from .http import Paginator, JiraNotFoundError, Client
 from .context import Context
 
 DEFAULT_PAGE_SIZE = 50
@@ -282,88 +283,97 @@ class BoardsGreenhopper(Stream):
                         Context.set_bookmark(page_num_offset, None)
             singer.write_state(Context.state)
 
+
+
 class Projects(Stream):
-    def sync_on_prem(self):
-        """ Sync function for the on prem instances"""
-        projects = Context.client.request(
-            self.tap_stream_id, "GET", "/rest/api/3/project",
-            params={"expand": "description,lead,url,projectKeys"})
-        for project in projects:
-            # The Jira documentation suggests that a "versions" key may appear
-            # in the project, but from my testing that hasn't been the case
-            # (even when projects do have versions). Since we are already
-            # syncing versions separately, pop this key just in case it
-            # appears.
-            project.pop("versions", None)
-        self.write_page(projects)
-        if Context.is_selected(VERSIONS.tap_stream_id):
-            for project in projects:
-                path = "/rest/api/3/project/{}/version".format(project["id"])
-                pager = Paginator(Context.client, order_by="sequence")
-                for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
-                    # Transform userReleaseDate and userStartDate values to 'yyyy-mm-dd' format.
-                    for each_page in page:
-                        each_page = update_user_date(each_page)
-                    VERSIONS.write_page(page)
-        if Context.is_selected(COMPONENTS.tap_stream_id):
-            for project in projects:
-                path = "/rest/api/3/project/{}/component".format(project["id"])
-                pager = Paginator(Context.client)
-                for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
-                    COMPONENTS.write_page(page)
-
-    def sync_cloud(self):
-        """ Sync function for the cloud instances"""
-        offset = 0
-        while True:
-            params = {
-                "expand": "description,lead,url,projectKeys",
-                "maxResults": DEFAULT_PAGE_SIZE, # maximum number of results to fetch in a page.
-                "startAt": offset #the offset to start at for the next page
-            }
-            projects = Context.client.request(
-                self.tap_stream_id, "GET", "/rest/api/3/project/search",
-                params=params)
-            for project in projects.get('values'):
-                # The Jira documentation suggests that a "versions" key may appear
-                # in the project, but from my testing that hasn't been the case
-                # (even when projects do have versions). Since we are already
-                # syncing versions separately, pop this key just in case it
-                # appears.
-                project.pop("versions", None)
-            self.write_page(projects.get('values'))
-            if Context.is_selected(VERSIONS.tap_stream_id):
-                for project in projects.get('values'):
-                    path = "/rest/api/3/project/{}/version".format(project["id"])
-                    pager = Paginator(Context.client, order_by="sequence")
-                    for page in pager.pages(VERSIONS.tap_stream_id, "GET", path):
-                        # Transform userReleaseDate and userStartDate values to 'yyyy-mm-dd' format.
-                        for each_page in page:
-                            each_page = update_user_date(each_page)
-
-                        VERSIONS.write_page(page)
-            if Context.is_selected(COMPONENTS.tap_stream_id):
-                for project in projects.get('values'):
-                    path = "/rest/api/3/project/{}/component".format(project["id"])
-                    pager = Paginator(Context.client)
-                    for page in pager.pages(COMPONENTS.tap_stream_id, "GET", path):
-                        COMPONENTS.write_page(page)
-
-            # `isLast` corresponds to whether it is the last page or not.
-            if projects.get("isLast"):
-                break
-            offset = offset + DEFAULT_PAGE_SIZE # next offset to start from
-
     def sync(self):
-        # The documentation https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/#api-rest-api-3-project-get
-        # suggests that the rest/api/3/project endpoint would be deprecated from the version 3 and w could use project/search endpoint
-        # which gives paginated response. However, the on prem servers doesn't allow working on the project/search endpoint. Hence for the cloud
-        # instances, the new endpoint would be called which also suggests pagination, but for on prm instances the old endpoint would be called.
-        # As we want to include both the cloud as well as the on-prem servers.
-        if Context.client.is_on_prem_instance:
-            self.sync_on_prem()
-        else:
-            self.sync_cloud()
+        """
+        This stream uses a direct, isolated requests session with Basic Auth
+        to exactly mimic a successful curl command, now with self-contained pagination.
+        """
+        username = Context.config.get("username")
+        password = Context.config.get("password")
+
+        if not (username and password):
+            LOGGER.warning("Username/Password not configured; skipping 'projects', 'versions', and 'components' streams.")
+            return
+
+        # Create a simple, dedicated session that will be reused for all calls in this stream.
+        session = requests.Session()
+        session.auth = (username, password) # Set Basic Auth directly
+        session.headers.update({
+            'Accept': 'application/json',
+            'X-Atlassian-Token': 'no-check'
+        })
+        base_url = "https://degreedjira.atlassian.net/rest/api/3"
+
+        all_projects = []
+        try:
+            # --- START: SELF-CONTAINED PAGINATION LOGIC ---
+            start_at = 0
+            max_results = 50 # Standard page size
+            
+            while True:
+                params = {
+                    "expand": "description,lead,url,projectKeys",
+                    "maxResults": max_results,
+                    "startAt": start_at
+                }
+                
+                response = session.get(f"{base_url}/project/search", params=params)
+                response.raise_for_status()
+                
+                response_json = response.json()
+                page_of_projects = response_json.get("values", [])
+                
+                if not page_of_projects:
+                    # If we get an empty page, we are done.
+                    break
+
+                for project in page_of_projects:
+                    project.pop("versions", None)
+                
+                self.write_page(page_of_projects)
+                all_projects.extend(page_of_projects)
+                
+                # Check if this was the last page
+                if response_json.get("isLast", False) or len(page_of_projects) < max_results:
+                    break
+                
+                # Advance to the next page
+                start_at += len(page_of_projects)
+            # --- END: SELF-CONTAINED PAGINATION LOGIC ---
+
+            LOGGER.info(f"Successfully fetched {len(all_projects)} projects across all pages.")
+
+        except Exception as e:
+            LOGGER.error(f"Failed to fetch the main project list. Error: {e}", exc_info=True)
+            return
+
+       
+        for project in all_projects:
+            if Context.is_selected(VERSIONS.tap_stream_id):
+                path = f"/project/{project['id']}/version"
+                try:
+                    # Use the same persistent session
+                    response = session.get(f"{base_url}{path}")
+                    response.raise_for_status()
+                    page = response.json().get("values", [])
+                    for record in page:
+                        record = update_user_date(record)
+                    VERSIONS.write_page(page)
+                except Exception as e:
+                    LOGGER.warning(f"Could not fetch versions for project {project['key']}. Error: {e}")
+            
+            if Context.is_selected(COMPONENTS.tap_stream_id):
+                path = f"/project/{project['id']}/component"
+                try:
+                    response = session.get(f"{base_url}{path}")
+                    response.raise_for_status()
+                    page = response.json().get("values", [])
+                    COMPONENTS.write_page(page)
+                except Exception as e:
+                    LOGGER.warning(f"Could not fetch components for project {project['key']}. Error: {e}")
 
 class ProjectTypes(Stream):
     def sync(self):
