@@ -397,8 +397,6 @@ class Users(Stream):
             LOGGER.warning("Username/Password not configured; skipping 'users' stream.")
             return
 
-        # --- THIS IS THE KEY PATTERN ---
-        # Create a simple, dedicated session that is proven to work.
         session = requests.Session()
         session.auth = (username, password)
         session.headers.update({
@@ -406,7 +404,6 @@ class Users(Stream):
             'X-Atlassian-Token': 'no-check'
         })
         base_url = "https://degreedjira.atlassian.net/rest/api/3"
-        # --- END KEY PATTERN ---
 
         if Context.config.get("groups"):
             groups = Context.config.get("groups").split(",")

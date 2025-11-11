@@ -168,7 +168,7 @@ class Client():
         self.is_on_prem_instance = False
 
         if self.is_cloud:
-            # This logic remains for anyone using OAuth, which is not you.
+            # This logic remains for anyone using OAuth.
             # LOGGER.info("Using OAuth based API authentication")
             self.auth_method = 'oauth'
             self.base_url = 'https://api.atlassian.com/ex/jira/{}{}'
@@ -180,8 +180,7 @@ class Client():
             self.refresh_credentials()
             self.test_credentials_are_authorized()
         
-        # --- MODIFIED ---
-        # This is the new logic for your pre-encoded Basic Auth key.
+        # This is the new logic for pre-encoded Basic Auth key.
         elif 'api_key' in config:
             # LOGGER.info("Using Pre-encoded Basic Auth API Key")
             self.auth_method = 'api_key'
@@ -190,7 +189,6 @@ class Client():
             if not self.api_key:
                 raise Exception("Configuration is missing required key: 'api_key'")
             self.test_basic_credentials_are_authorized()
-        # --- END MODIFIED ---
             
         else:
             # This is the original legacy Basic Auth logic.
@@ -225,12 +223,10 @@ class Client():
             headers['Accept'] = 'application/json'
             headers['Authorization'] = 'Bearer {}'.format(self.access_token)
             
-        # --- MODIFIED ---
-        # If we are using the api_key method, set the header directly.
+
         elif self.auth_method == 'api_key':
             headers['Accept'] = 'application/json'
             headers['Authorization'] = f"Basic {self.api_key}"
-        # --- END MODIFIED ---
 
         return headers
 
@@ -240,13 +236,7 @@ class Client():
                           max_tries=6,
                           giveup=lambda e: not should_retry_httperror(e))
     def send(self, method, path, headers={}, **kwargs):
-        # --- MODIFIED ---
-        # This logic is simplified. We build the full headers first, then decide
-        # whether to pass the `auth` object for legacy basic auth.
         full_headers = self._headers(headers)
-        
-        # Prioritize the 'auth' object passed in kwargs.
-        # Fall back to the client's default auth only if one isn't provided.
         auth_object = kwargs.pop('auth', self.auth if hasattr(self, 'auth') else None)
 
         request = requests.Request(method,
@@ -322,9 +312,8 @@ class Client():
             self.login_timer.start()
 
     def test_credentials_are_authorized(self):
-        # Assume that everyone has issues, so we try and hit that endpoint
-        self.request("issues", "POST", "/rest/api/3/search/jql", # This path is incorrect for GET, but client.request will convert it to POST if json body is provided.
-                     json={"maxResults": 1, "jql": "ORDER BY created DESC"}) # ✅ Use POST with JSON body for /search/jql
+        self.request("issues", "POST", "/rest/api/3/search/jql",
+                     json={"maxResults": 1, "jql": "ORDER BY created DESC"})
 
     def test_basic_credentials_are_authorized(self):
         """
@@ -371,7 +360,6 @@ class Paginator():
 
     def pages(self, *args, **kwargs):
         if self.method == 'nextPageToken':
-            # --- This is your proven, working nextPageToken logic ---
             json_body = kwargs.pop("json", {}).copy()
             while self.next_page_token is not None:
                 current_json_body = json_body.copy()
@@ -388,7 +376,6 @@ class Paginator():
                     yield page
         
         elif self.method == 'startAt':
-            # --- This is the classic, working startAt logic ---
             params = kwargs.pop("params", {}).copy()
             while self.next_page_num is not None:
                 params["maxResults"] = self.page_size
