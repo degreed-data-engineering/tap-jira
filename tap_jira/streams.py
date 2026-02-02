@@ -311,7 +311,7 @@ class Projects(Stream):
         try:
             # --- START: SELF-CONTAINED PAGINATION LOGIC ---
             start_at = 0
-            max_results = 50 # Standard page size
+            max_results = 100 # Standard page size
             
             while True:
                 params = {
@@ -355,13 +355,42 @@ class Projects(Stream):
             if Context.is_selected(VERSIONS.tap_stream_id):
                 path = f"/project/{project['id']}/version"
                 try:
-                    # Use the same persistent session
-                    response = session.get(f"{base_url}{path}")
-                    response.raise_for_status()
-                    page = response.json().get("values", [])
-                    for record in page:
-                        record = update_user_date(record)
-                    VERSIONS.write_page(page)
+                    # --- START: SELF-CONTAINED PAGINATION LOGIC FOR VERSIONS ---
+                    all_versions = []
+                    start_at = 0
+                    max_results = 100 # Standard page size
+                    
+                    while True:
+                        params = {
+                            "maxResults": max_results,
+                            "startAt": start_at
+                        }
+                        
+                        response = session.get(f"{base_url}{path}", params=params)
+                        response.raise_for_status()
+                        
+                        response_json = response.json()
+                        page = response_json.get("values", [])
+                        
+                        if not page:
+                            # If we get an empty page, we are done.
+                            break
+
+                        for record in page:
+                            record = update_user_date(record)
+                        
+                        all_versions.extend(page)
+                        
+                        # Check if this was the last page
+                        if response_json.get("isLast", False) or len(page) < max_results:
+                            break
+                        
+                        # Advance to the next page
+                        start_at += len(page)
+                    # --- END: SELF-CONTAINED PAGINATION LOGIC FOR VERSIONS ---
+                    
+                    if all_versions:
+                        VERSIONS.write_page(all_versions)
                 except Exception as e:
                     LOGGER.warning(f"Could not fetch versions for project {project['key']}. Error: {e}")
             
