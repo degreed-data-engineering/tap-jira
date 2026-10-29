@@ -220,6 +220,7 @@ class TestJiraErrorHandling(unittest.TestCase):
             expected_error_message = "HTTP-error-code: 504, Error: API service time out, please check Jira server."
             # Verifying the message formed for the custom exception
             self.assertEquals(str(e), expected_error_message)
+            self.assertEquals(mock_send.call_count,10)
             
 
     @mock.patch("tap_jira.http.Client.send",side_effect=mock_send_505)
